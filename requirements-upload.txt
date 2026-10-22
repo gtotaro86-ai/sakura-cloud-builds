@@ -1,0 +1,2 @@
+huggingface-hub==2.2.0
+hf-xet==1.7.0

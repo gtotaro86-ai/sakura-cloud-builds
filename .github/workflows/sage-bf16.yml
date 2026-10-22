@@ -1,0 +1,73 @@
+name: Sage BF16 CPU quantization and release
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - request.json
+permissions:
+  contents: read
+concurrency:
+  group: sage-bf16-release
+  cancel-in-progress: false
+jobs:
+  quantize:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [Q4_K_M, Q5_K_M]
+    env:
+      REPO_VISIBILITY: ${{ github.event.repository.visibility }}
+      SAGE_STANDARD_RUNNER: ubuntu-24.04
+      OMP_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Check authorized request and small source integrity
+        run: |
+          python -c 'import json; p=json.load(open("request.json")); assert p == {"model":"InternScience/Sage-A1.5","source_revision":"0e3205cf441cf01df0c0d238cc4738d0e43b4ca7","variants":["Q4_K_M","Q5_K_M"],"publish":True,"paid_resources":False}'
+          sha256sum -c SHA256SUMS
+      - name: Require upload secret before allocating build work
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo '::error::Add the HF_TOKEN repository secret in Settings > Secrets and variables > Actions.'
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 970b51ce7c9ba5fff0726c5e9994f1c2f0e4eedc
+          path: llama
+          persist-credentials: false
+      - name: Install isolated CPU conversion and upload dependencies
+        run: |
+          python -m venv convert-env
+          convert-env/bin/pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+          convert-env/bin/pip install -r requirements-convert.txt
+          python -m venv upload-env
+          upload-env/bin/pip install -r requirements-upload.txt
+      - name: Build pinned CPU quantizer and metadata adapter
+        run: |
+          cmake -S llama -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+          cmake --build build --target llama --parallel 4
+          g++ -std=c++17 -shared -fPIC quant_bridge.cpp -I llama/src -I llama/include -I llama/ggml/include -L build/bin -Wl,-rpath,'$ORIGIN/bin' -lllama -lggml-base -o build/lib_sage_quant.so
+      - name: Check streaming adapter before full source reads
+        run: convert-env/bin/python checks.py --llama llama --build build --work "${RUNNER_TEMP}/checks"
+      - name: Original BF16 shards to CPU quantization to native Xet
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CACHE: ${{ runner.temp }}/xet-cache
+        run: upload-env/bin/python publish.py --variant "${{ matrix.variant }}" --converter-python "$PWD/convert-env/bin/python" --llama llama --build build --work "${RUNNER_TEMP}/sage-build"
+      # No GPU, larger runner, model artifacts, model cache, or API inference calls.
