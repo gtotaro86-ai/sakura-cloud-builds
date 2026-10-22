@@ -79,7 +79,7 @@ def main():
     op.upload_info=UploadInfo(size=count,sample=sample,sha256=bytes.fromhex(sha))
     op._upload_mode='lfs';op._should_ignore=False;op._is_uploaded=True
     projector=inventory()['projector']
-    copied=CommitOperationCopy(src_repo_id=projector['repo'],src_revision=projector['revision'],src_path_in_repo=projector['path'],path_in_repo=projector['path'])
+    copied=CommitOperationCopy(src_repo_type='model',src_repo_id=projector['repo'],src_revision=projector['revision'],src_path_in_repo=projector['path'],path_in_repo=projector['path'])
     manifest={'source':inventory(),'output':plan,'sha256':sha,'receipt':receipt,'upload_native_sha256_verified':True}
     sums=f"{sha}  {path}\n{projector['sha256']}  {projector['path']}\n"
     docs={'README.md':readme(plan,sha),'SHA256SUMS':sums,'build-manifest.json':json.dumps(manifest,indent=2)+'\n',
