@@ -4,8 +4,16 @@ from pathlib import Path
 from unittest import mock
 from source import fetch, inventory, headers, VerifiedShardCache, digest
 from producer import setup, make_model, Quantizer, assemble_plan
+from publish import authentication_token
 
 def range_checks(work):
+    for raw in ('dummy-token',' dummy-token ','dummy-token\r\n'):
+        with mock.patch.dict(os.environ,{'HF_TOKEN':raw}):assert authentication_token()=='dummy-token'
+    for raw in ('',' ','dummy\ntoken','dummy token','dumm\u00fcy'):
+        with mock.patch.dict(os.environ,{'HF_TOKEN':raw}):
+            try:authentication_token()
+            except RuntimeError as error:assert raw not in str(error) if raw.strip() else True
+            else:raise AssertionError('Malformed credential accepted')
     class Response:
         def __init__(self,status,contentrange,body):
             self.status=status;self.headers={'Content-Range':contentrange};self.body=body;self.reads=0
