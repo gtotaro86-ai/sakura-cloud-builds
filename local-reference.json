@@ -1,0 +1,107 @@
+{
+  "evidence_level": "owner_report",
+  "reported_on": "2026-10-22",
+  "artifact": {
+    "file": "Sage-A1.5-Q5_K_M-imatrix.gguf",
+    "size": 25628142112,
+    "sha256": "c4ff7f8f46dbb1cc4b9a9a85be111033ed658880aaddf1cb0d346c5de58cae63",
+    "quantization": "Q5_K_M with importance matrix",
+    "source": {
+      "repo": "InternScience/Sage-A1.5-Q8_0-GGUF",
+      "revision": "dfcef699cb670918f3aa4fa6462559b16294fc8f",
+      "file": "Sage-A1.5-Q8_0.gguf",
+      "size": 37802150112,
+      "sha256": "f7247f6faef3f6c616b953595e1fc7c3fbf257d02d9915af5fdf15e808ea8ee4",
+      "cloud_metadata_check": {
+        "method": "Pinned public HF LFS metadata",
+        "size_and_sha256_match": true,
+        "full_payload_downloaded": false
+      }
+    },
+    "mtp": {
+      "block": 40,
+      "tensor_count": 20,
+      "precision": "original Q8_0/F32",
+      "byte_identical_preservation_reported": true
+    }
+  },
+  "quantizer": {
+    "name": "llama.cpp",
+    "build": 11594,
+    "revision_reported": "e0bcaccbe",
+    "compiler": "Clang 20.1.8 x86_64",
+    "imatrix": {
+      "file": "Sage-A1.5-Q8_0-calib-mix-96x512-main.imatrix.gguf",
+      "size": 384359808,
+      "calibration_file": "calib_mix_v1.txt",
+      "chunks": 96,
+      "tokens_per_chunk": 512,
+      "coverage_reported": {
+        "blocks": 40,
+        "experts_per_moe_layer": 256,
+        "unseen_experts": 0
+      }
+    },
+    "command": "llama-quantize.exe --allow-requantize --imatrix Sage-A1.5-Q8_0-calib-mix-96x512-main.imatrix.gguf --tensor-type \"^blk[.]40[.].*=q8_0\" --max-buffer-size 2048 Sage-A1.5-Q8_0.gguf Sage-A1.5-Q5_K_M-imatrix.gguf Q5_K_M 12"
+  },
+  "runtime": {
+    "name": "llama-server.exe",
+    "build": 11594,
+    "backend": "Vulkan0",
+    "hardware": "AMD Ryzen AI Max+ 392, Radeon 8060S, 64 GB unified memory, Windows",
+    "context_tokens": 65536,
+    "gpu_layers": 99,
+    "flash_attention": true,
+    "parallel": 1,
+    "mtp": {
+      "type": "draft-mtp",
+      "max_draft_tokens": 2
+    },
+    "command": "llama-server.exe -m Sage-A1.5-Q5_K_M-imatrix.gguf --alias sage-a15-q5-test --host 127.0.0.1 --port 18105 -ngl 99 --device Vulkan0 -c 65536 -b 512 -ub 512 --parallel 1 -fa on --jinja --reasoning-format deepseek --spec-type draft-mtp --spec-draft-n-max 2 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0"
+  },
+  "reported_results": {
+    "working": [
+      "full model loading",
+      "web UI",
+      "OpenAI-compatible chat API",
+      "streaming",
+      "tool/JSON calls"
+    ],
+    "modality": "text",
+    "uma_usage_gb_approx": 27.8,
+    "prompt_processing_tokens_per_second": [
+      850,
+      1050
+    ],
+    "short_prompt_ttft_seconds": [
+      0.6,
+      0.9
+    ],
+    "prompt_8500_tokens_ttft_seconds": [
+      8,
+      12
+    ],
+    "reasoning_decode_tokens_per_second": [
+      59,
+      65
+    ],
+    "reasoning_mtp_acceptance_percent": [
+      58,
+      64
+    ],
+    "python_decode_tokens_per_second": [
+      64,
+      77
+    ],
+    "python_mtp_acceptance_percent_max": 87.5,
+    "python_decode_speedup_vs_mtp_off_percent": [
+      13,
+      34
+    ]
+  },
+  "limits": {
+    "local_weights_and_raw_measurement_logs_not_available_in_cloud": true,
+    "local_artifact_is_distinct_from_bf16_cloud_outputs": true,
+    "measurements_must_not_be_attributed_to_bf16_cloud_outputs": true
+  }
+}

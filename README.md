@@ -22,3 +22,9 @@ Create a dedicated **public** repository with an initial README, then grant the 
 The dedicated repository's `request.json` push starts both jobs. Alternatively, use Actions -> Sage BF16 CPU quantization and release -> Run workflow. Do not add a scheduled trigger or run the request repeatedly. The publisher refuses to overwrite existing model contents.
 
 The full Sage workflow must still be qualified in its actual GitHub runner context; preparation alone is not a completed model build. A failed job does not prove a successful release. Check the actual run logs, final model commits and recorded hashes.
+
+## Model-card refresh
+
+`Update Sage model cards` runs after a successful full build and can also be started manually. It verifies both published model manifests and remote GGUF size/SHA256 values, then updates only the English/Chinese README and `local-reference.json`. The original GGUF hashes must remain unchanged. No weights are downloaded or requantized.
+
+The owner-reported local reference is a separate Q8-to-Q5_K_M importance-matrix build with Q8/F32 MTP tensors retained. Its performance numbers must not be assigned to the BF16 cloud builds. The local output and raw measurement logs have not been independently inspected here. The reported Q8 source file's size and LFS SHA256 match its pinned public HF revision.

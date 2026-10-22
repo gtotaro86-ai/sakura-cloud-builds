@@ -73,6 +73,54 @@ For image input, also download `Sage-A1.5-mmproj.gguf` from this repository and 
 
 The original model's recommended prompt format and capabilities are documented in the [upstream model card](https://huggingface.co/InternScience/Sage-A1.5). The [official Q8_0 distribution](https://huggingface.co/InternScience/Sage-A1.5-Q8_0-GGUF) supplies the unchanged projector and the Q8_0 size reference.
 
+## Local performance reference
+
+The model owner reported the following results for a **separate local artifact**, `Sage-A1.5-Q5_K_M-imatrix.gguf` (25,628,142,112 bytes / 23.868 GiB). It was requantized from the official Q8_0 file with an importance matrix; its 20 block-40 MTP tensors were reported as byte-identical Q8_0/F32 copies. These figures apply to that reference artifact. They do not establish performance for the BF16-generated files in this repository.
+
+| Build detail | This BF16 cloud release | Owner's local reference |
+|---|---|---|
+| Language-weight input | Original BF16 safetensors | Official Q8_0 GGUF |
+| Importance matrix | None; standard llama.cpp quantization | 96 x 512-token mixed calibration |
+| MTP precision | Standard mixed quantization policy, plus retained F32 tensors | Original Q8_0/F32, 20 tensors reported unchanged |
+| Reference file size | See this release's size table | 25.628 GB |
+
+Reported configuration: **Ryzen AI Max+ 392 / Radeon 8060S, 64 GB unified memory, Windows, Vulkan**, llama.cpp build **11594** (`e0bcaccbe`, Clang 20.1.8), full GPU offload, Flash Attention, a **65,536-token context allocation**, one sequence, and `draft-mtp` with at most two draft tokens.
+
+| Metric / workload | Owner-reported result |
+|---|---:|
+| Prompt processing | 850-1,050 tokens/s |
+| TTFT, short prompts | 0.6-0.9 s |
+| TTFT, 8,500-token input | 8-12 s |
+| Reasoning decode | 59-65 tokens/s |
+| Reasoning MTP acceptance | 58-64% |
+| Python generation decode | 64-77 tokens/s |
+| Python MTP acceptance | Up to 87.5% |
+| Python decode gain over MTP off | 13-34% |
+| Model and KV-cache UMA usage | Approximately 27.8 GB |
+
+The owner reported successful loading, web UI, OpenAI-compatible chat API, streaming and tool/JSON calls for text workloads. The reported calibration covered all 40 main blocks and all 256 experts per MoE layer, with zero unseen experts.
+
+<details>
+<summary>Local reference provenance and exact commands</summary>
+
+Q8_0 source: [InternScience/Sage-A1.5-Q8_0-GGUF](https://huggingface.co/InternScience/Sage-A1.5-Q8_0-GGUF/tree/dfcef699cb670918f3aa4fa6462559b16294fc8f), revision `dfcef699cb670918f3aa4fa6462559b16294fc8f`.
+
+Source SHA256: `f7247f6faef3f6c616b953595e1fc7c3fbf257d02d9915af5fdf15e808ea8ee4`.
+
+Local reference SHA256: `c4ff7f8f46dbb1cc4b9a9a85be111033ed658880aaddf1cb0d346c5de58cae63`.
+
+Importance matrix: `Sage-A1.5-Q8_0-calib-mix-96x512-main.imatrix.gguf`, 384,359,808 bytes, from `calib_mix_v1.txt` (96 chunks of 512 tokens). Commands below reproduce the reported local configuration and refer to that runtime build.
+
+```cmd
+llama-quantize.exe --allow-requantize --imatrix Sage-A1.5-Q8_0-calib-mix-96x512-main.imatrix.gguf --tensor-type "^blk[.]40[.].*=q8_0" --max-buffer-size 2048 Sage-A1.5-Q8_0.gguf Sage-A1.5-Q5_K_M-imatrix.gguf Q5_K_M 12
+```
+
+```cmd
+llama-server.exe -m Sage-A1.5-Q5_K_M-imatrix.gguf --alias sage-a15-q5-test --host 127.0.0.1 --port 18105 -ngl 99 --device Vulkan0 -c 65536 -b 512 -ub 512 --parallel 1 -fa on --jinja --reasoning-format deepseek --spec-type draft-mtp --spec-draft-n-max 2 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0
+```
+
+</details>
+
 <details>
 <summary>中文说明</summary>
 
@@ -91,5 +139,23 @@ The original model's recommended prompt format and capabilities are documented i
 主模型比官方 Q8_0 主文件减少 **42.56%**，节省 **16.089 GB**。这些数字表示文件大小；实际运行还需要上下文及后端缓冲区内存。
 
 使用支持 Qwen3.5 MoE 的近期 llama.cpp 版本。纯文本推理只需主 GGUF 文件；图像输入还需要 `Sage-A1.5-mmproj.gguf`。MTP 的启用方式取决于所用运行时。分词器和聊天模板来自固定版本的原始模型。许可证为 Apache 2.0。
+
+### 本地性能参考
+
+模型所有者报告了独立本地文件 `Sage-A1.5-Q5_K_M-imatrix.gguf` 的文本运行数据：该文件由官方 Q8_0 通过重要性矩阵重新量化，大小 25.628 GB，20 个 MTP 张量据报告保持原始 Q8_0/F32 字节不变。本仓库从原始 BF16 生成，未使用该重要性矩阵，MTP 按标准混合精度规则处理。下列数据仅对应该本地参考文件。
+
+硬件为 Ryzen AI Max+ 392、Radeon 8060S、64 GB 统一内存，Windows/Vulkan，llama.cpp build 11594（`e0bcaccbe`），全 GPU 卸载、Flash Attention、65,536 token 上下文分配、单序列、`draft-mtp` 最多 2 个草稿 token。
+
+| 指标 | 所有者报告 |
+|---|---:|
+| 提示处理 | 850-1,050 tokens/s |
+| 短提示首 token 延迟 | 0.6-0.9 秒 |
+| 8,500-token 输入首 token 延迟 | 8-12 秒 |
+| 推理解码 | 59-65 tokens/s，MTP 接受率 58-64% |
+| Python 代码生成 | 64-77 tokens/s，MTP 接受率最高 87.5% |
+| Python 解码相对关闭 MTP 的提升 | 13-34% |
+| 模型与 KV 缓存内存占用 | 约 27.8 GB UMA |
+
+所有者报告文本加载、Web UI、聊天 API、流式输出和工具/JSON 调用正常。校准据报告覆盖全部 40 个主模型块、每个 MoE 层全部 256 个专家，未见专家数为 0。
 
 </details>
