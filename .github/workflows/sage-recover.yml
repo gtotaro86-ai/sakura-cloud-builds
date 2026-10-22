@@ -1,6 +1,10 @@
 name: Finalize completed Sage uploads
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [Sage BF16 CPU quantization and release]
+    types: [completed]
+    branches: [main]
   push:
     paths: [recovery-request.json]
 permissions:
@@ -11,7 +15,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   finalize:
-    if: github.event.repository.private == false
+    if: >-
+      github.event.repository.private == false &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.id == 39845179392 &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -35,8 +43,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python - <<'PY'
-          import json,subprocess,sys
+          import json,subprocess,sys,os
           request=json.load(open('recovery-request.json'))
+          if os.environ.get('GITHUB_EVENT_NAME')=='workflow_run':
+              request={'run_id':39845179392,'variants':['Q4_K_M']}
           assert request['run_id']==39845179392
           assert request['variants'] and set(request['variants']) <= {'Q4_K_M','Q5_K_M'}
           for variant in request['variants']:
