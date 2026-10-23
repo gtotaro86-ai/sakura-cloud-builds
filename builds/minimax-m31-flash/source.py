@@ -57,6 +57,7 @@ def metadata(work):
                 raw = r.read(spec['size']+1)
             if len(raw) != spec['size'] or digest(raw) != spec['sha256']:
                 raise RuntimeError('Pinned metadata size/hash mismatch: '+spec['path'])
+            dst.parent.mkdir(parents=True,exist_ok=True)
             dst.write_bytes(raw)
         if digest(dst.read_bytes()) != spec['sha256']:
             raise RuntimeError('Changed local metadata')
@@ -76,6 +77,7 @@ def headers(work):
             if not 2 <= n <= 5*1024**2:
                 raise RuntimeError('Unbounded safetensors header')
             raw = fetch(name, 8, n, spec['size'], work)
+            dst.parent.mkdir(parents=True,exist_ok=True)
             dst.write_bytes(raw)
         if digest(raw) != spec['header_sha256'] or len(raw) != spec['header_size']:
             raise RuntimeError('Frozen safetensors header mismatch: '+name)

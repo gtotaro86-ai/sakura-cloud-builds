@@ -10,3 +10,4 @@
   "max_parallel_shards": 2,
   "automatic_transient_retry_limit": 1
 }
+
