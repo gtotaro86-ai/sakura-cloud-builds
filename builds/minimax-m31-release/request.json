@@ -1,7 +1,7 @@
 {
   "build_run_id": 39908350992,
   "build_commit": "35fe24364aede18b80e7789cff74ae5a4f2bb231",
-  "variant": "Q3_K_M",
+  "variant": "Q4_K_M",
   "publish": true,
   "paid_resources": false
 }
