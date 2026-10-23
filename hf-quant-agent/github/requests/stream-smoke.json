@@ -1,0 +1,12 @@
+{
+  "source": {
+    "repo_id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    "revision": "9217f5db79a29953eb74d5343926648285ec7e67",
+    "filename": "qwen2.5-0.5b-instruct-q8_0.gguf",
+    "size": 675710816,
+    "sha256": "ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e"
+  },
+  "runtime_revision": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
+  "quants": ["Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M"],
+  "source_license": {"redistributable": true, "reason": "Apache-2.0 official Qwen source"}
+}
