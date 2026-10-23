@@ -34,3 +34,5 @@ Completed uploads can be finalized with `recover_publish.py` and `.github/workfl
 ## Additional model projects
 
 The original BF16 Recursive Flint Q4_K_M/Q5_K_M project is in `builds/flint/`. Root workflows `flint-bf16.yml` and `flint-finalize.yml` construct, publish, verify and recover the releases independently of the chat. See the project README for byte budgets, pinned provenance, proof checkpoints and the one-retry limit.
+
+MiniMax M3.1 Flash Q2_K/Q3_K_M/Q4_K_M/Q5_K_M is in `builds/minimax-m31-flash/`. Its dedicated CPU workflow qualifies the required all-layer sparse runtime patch, stages 22 independently verified GGUF shards and releases complete variants through an autonomous finalizer. Original hybrid source and DSpark provenance are retained. See the project README for sizes, standard-runner budgets, staging/recovery and runtime requirements.

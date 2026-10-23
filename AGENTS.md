@@ -11,3 +11,5 @@
 - A model release requires user authorization. Current authorization covers the original BF16 Sage-A1.5 and RecursiveSI/flint sources and their Q4_K_M/Q5_K_M releases in the named webmp3 repositories. Flint targets: webmp3/Sakura-Flint-Q4_K_M-GGUF and webmp3/Sakura-Flint-Q5_K_M-GGUF; the user explicitly requested autonomous construction and release. Do not infer authorization for unrelated models.
 - Preserve bundled MTP weights. Do not replace them with external draft models.
 - Report actual run IDs, failures and final published file hashes. Prepared scripts and successful metadata checks are not completed full model builds.
+
+- Additional current user authorization: original released MiniMaxAI/MiniMax-M3.1-Flash hybrid checkpoint to Q2_K, Q3_K_M, Q4_K_M and Q5_K_M and corresponding webmp3 Sakura HF releases; see builds/minimax-m31-flash/AGENTS.md.
