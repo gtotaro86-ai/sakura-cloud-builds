@@ -23,6 +23,21 @@ def check_packet(p,index,frozen,remote):
     if n['path']!=frozen['path'] or n['size']!=frozen['size'] or remote is None or remote.size!=n['size'] or not remote.lfs or remote.lfs.sha256!=n['sha256']:
         raise RuntimeError('Hub main shard identity differs')
 
+def same_repo_operations(repo,operations,copy_type):
+    # HF duplicates cross-repository LFS objects via a separate endpoint. A copy
+    # from another branch of the same repository must leave src_repo_id unset.
+    for op in operations:
+        if isinstance(op,copy_type) and op.src_repo_id==repo:op.src_repo_id=None
+    return operations
+
+class PublicationApi:
+    def __init__(self,api):self.api=api
+    def __getattr__(self,name):return getattr(self.api,name)
+    def create_commit(self,**kwargs):
+        from huggingface_hub import CommitOperationCopy
+        kwargs['operations']=same_repo_operations(kwargs['repo_id'],kwargs['operations'],CommitOperationCopy)
+        return self.api.create_commit(**kwargs)
+
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--original-build',type=Path,required=True);a=ap.parse_args()
     if json.loads((Path(__file__).parent/'request.json').read_text())!=EXPECTED:raise RuntimeError('Unapproved release request')
@@ -50,7 +65,7 @@ def main():
         p=json.loads(raw);validate(p);check_packet(p,i,frozen,files.get(p['native_file']['path']));packets.append(p)
     manifest,samples=assemble(api,VARIANT,packets)
     print(json.dumps({'all_four_shards_verified':True,'main_bytes':plan['size'],'source_shards_verified':len(manifest['receipt']['source_files_verified']),'files':manifest['native_files']}),flush=True)
-    revision=commit_existing(api,manifest,samples);verify_remote(api,repo,revision,manifest)
+    revision=commit_existing(PublicationApi(api),manifest,samples);verify_remote(api,repo,revision,manifest)
     # Include the exact pinned upstream runtime license alongside its derivative patch.
     license_path=Path(__file__).parent/'RUNTIME-LICENSE';license_bytes=license_path.read_bytes()
     latest=api.model_info(repo,files_metadata=True);existing=next((f for f in latest.siblings if f.rfilename=='RUNTIME-LICENSE'),None)

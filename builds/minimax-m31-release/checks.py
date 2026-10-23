@@ -21,5 +21,10 @@ def main():
     remote=N(size=100,lfs=N(sha256='a'*64));p.check_packet(packet,1,frozen,remote)
     fails(lambda:p.check_packet(packet,0,frozen,remote))
     fails(lambda:p.check_packet(packet,1,frozen,N(size=100,lfs=N(sha256='b'*64))))
+    class Copy:
+        def __init__(self,repo):self.src_repo_id=repo
+    same=Copy('target');external=Copy('source');other=N(src_repo_id='target')
+    ops=p.same_repo_operations('target',[same,external,other],Copy)
+    assert same.src_repo_id is None and external.src_repo_id=='source' and other.src_repo_id=='target' and len(ops)==3
     print('Synthetic guards passed: successful complete job set, exact build identity and matching Hub size/hash required.')
 if __name__=='__main__':main()
