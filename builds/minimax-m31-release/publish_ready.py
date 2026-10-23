@@ -1,11 +1,15 @@
-"""Metadata-only publication of the complete Q2 variant before other variants finish."""
+"""Metadata-only publication of one authorized complete MiniMax variant."""
 import argparse,json,os,subprocess,sys
 from pathlib import Path
 
 REPO='gtotaro86-ai/sakura-cloud-builds'
 COMMIT='35fe24364aede18b80e7789cff74ae5a4f2bb231'
 RUN=39908350992
-VARIANT='Q2_K'
+COUNTS={'Q2_K':4,'Q3_K_M':5,'Q4_K_M':6,'Q5_K_M':7}
+REQUEST=json.loads((Path(__file__).parent/'request.json').read_text())
+VARIANT=REQUEST.get('variant')
+if VARIANT not in COUNTS:raise RuntimeError('Unauthorized variant')
+SHARD_COUNT=COUNTS[VARIANT]
 EXPECTED={'build_run_id':RUN,'build_commit':COMMIT,'variant':VARIANT,'publish':True,'paid_resources':False}
 
 def check_run(run,jobs,checkout):
@@ -13,8 +17,8 @@ def check_run(run,jobs,checkout):
         raise RuntimeError('Original build identity mismatch')
     names={j['name']:j for j in jobs}
     if len(names)!=len(jobs):raise RuntimeError('Ambiguous build job set')
-    for n in ('qualify','assets',*[f'quantize-{VARIANT}-{i}' for i in range(4)]):
-        if n not in names or names[n]['conclusion']!='success':raise RuntimeError('Complete successful Q2 job set is required: '+n)
+    for n in ('qualify','assets',*[f'quantize-{VARIANT}-{i}' for i in range(SHARD_COUNT)]):
+        if n not in names or names[n]['conclusion']!='success':raise RuntimeError('Complete successful variant job set is required: '+n)
 
 def check_packet(p,index,frozen,remote):
     if (p['variant'],p['index'],p['builder_commit'],p['build_run_id'])!=(VARIANT,index,COMMIT,str(RUN)):
@@ -55,7 +59,7 @@ def main():
     repo=target(VARIANT);info=api.model_info(repo,revision='build-'+COMMIT,files_metadata=True)
     if info.private is not False:raise RuntimeError('Only a public HF target is authorized')
     files={f.rfilename:f for f in info.siblings};plan=json.loads((ROOT/'split-plans.json').read_text())[VARIANT]
-    if len(plan['files'])!=4:raise RuntimeError('Unexpected Q2 split count')
+    if len(plan['files'])!=SHARD_COUNT:raise RuntimeError('Unexpected variant split count')
     packets=[]
     for i,frozen in enumerate(plan['files']):
         name=f'staging/shard-{i:05d}.json';entry=files.get(name)
@@ -64,7 +68,7 @@ def main():
         if len(raw)!=entry.size:raise RuntimeError('Staging proof byte count differs')
         p=json.loads(raw);validate(p);check_packet(p,i,frozen,files.get(p['native_file']['path']));packets.append(p)
     manifest,samples=assemble(api,VARIANT,packets)
-    print(json.dumps({'all_four_shards_verified':True,'main_bytes':plan['size'],'source_shards_verified':len(manifest['receipt']['source_files_verified']),'files':manifest['native_files']}),flush=True)
+    print(json.dumps({'all_shards_verified':True,'variant':VARIANT,'shard_count':SHARD_COUNT,'main_bytes':plan['size'],'source_shards_verified':len(manifest['receipt']['source_files_verified']),'files':manifest['native_files']}),flush=True)
     revision=commit_existing(PublicationApi(api),manifest,samples);verify_remote(api,repo,revision,manifest)
     # Include the exact pinned upstream runtime license alongside its derivative patch.
     license_path=Path(__file__).parent/'RUNTIME-LICENSE';license_bytes=license_path.read_bytes()
@@ -78,5 +82,5 @@ def main():
         revision=result.oid
     verify_remote(api,repo,revision,manifest)
     print(json.dumps({'published':repo,'revision':revision,'main_bytes':plan['size'],'runtime_license_sha256':digest(license_bytes),'files':manifest['native_files']}),flush=True)
-    if os.environ.get('GITHUB_STEP_SUMMARY'):Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('Published https://huggingface.co/'+repo+'\n\nAll four Q2 GGUF shards and auxiliary files are verified. English/Chinese README, comparison, original license, pinned runtime patch/script, SHA256SUMS and build provenance are included. No new model inference/quality result is claimed. Q3–Q5 continue separately.\n')
+    if os.environ.get('GITHUB_STEP_SUMMARY'):Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('Published https://huggingface.co/'+repo+'\n\nAll '+str(SHARD_COUNT)+' '+VARIANT+' GGUF shards and auxiliary files are verified. English/Chinese README, comparison, original license, pinned runtime patch/script, SHA256SUMS and build provenance are included. No new model inference/quality result is claimed. Other variants continue separately.\n')
 if __name__=='__main__':main()

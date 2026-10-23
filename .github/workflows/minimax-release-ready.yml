@@ -1,4 +1,4 @@
-name: Release completed MiniMax Q2 GGUF
+name: Release completed MiniMax GGUF
 on:
   workflow_dispatch:
   push:
@@ -7,7 +7,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: minimax-q2-ready-release
+  group: minimax-ready-release
   cancel-in-progress: false
 jobs:
   release:
@@ -44,7 +44,7 @@ jobs:
         run: python -m pip install --no-cache-dir -r "$GITHUB_WORKSPACE/original-build/builds/minimax-m31-flash/requirements-upload.txt"
       - name: Check complete-model release guards
         run: python checks.py
-      - name: Verify every completed Q2 shard and publish the complete HF model
+      - name: Verify every completed variant shard and publish the complete HF model
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
