@@ -314,17 +314,298 @@ class QuantizedStream:
         if self.descriptor.get('sources') is not None:
             self.remote.reader.begin_verified_pass()
         yield emit(self.header)
-        …12941 tokens truncated…b/hf-quant-agent/data", "/var/lib/hf-quant-agent/work"):
-        shutil.chown(path, user="hfquant", group="hfquant")
-        os.chmod(path, 0o750)
-    if not os.path.exists(ROOT + "/.venv/bin/pip"):
-        run(["python3", "-m", "venv", ROOT + "/.venv"])
-        run([ROOT + "/.venv/bin/pip", "install", "-r", ROOT + "/requirements.txt"])
-    run(["systemctl", "daemon-reload"])
-    run(["systemctl", "enable", "--now", "hf-quant-agent"])
-    time.sleep(2)
-    print(subprocess.check_output(["systemctl", "is-active", "hf-quant-agent", "AdGuardHome", "unbound", "tailscaled"], text=True))
+        for tensor in self.tensors:
+            skip_source(tensor['source_start'])
+            cols = tensor['shape'][0]
+            rows = math.prod(tensor['shape'][1:])
+            block, width = LAYOUTS[tensor['input_type']]
+            input_rowbytes = cols // block * width
+            rows_per_chunk = max(1, ROW_WORK_BYTES // (cols * 4))
+            tensor_hash, tensor_bytes = hashlib.sha256(), 0
+            for start in range(0, rows, rows_per_chunk):
+                count = min(rows_per_chunk, rows - start) * input_rowbytes
+                raw = read_source(cursor, count)
+                cursor += count
+                result = self.quantizer.quantize_rows(raw, tensor['input_type'], tensor['type'], cols)
+                output_block, output_width = LAYOUTS[tensor['type']]
+                if len(result) != (count // input_rowbytes) * cols // output_block * output_width:
+                    raise RuntimeError('native output chunk byte count differs from global plan')
+                tensor_hash.update(result)
+                tensor_bytes += len(result)
+                yield emit(result)
+            if tensor_bytes != tensor['nbytes']:
+                raise RuntimeError('quantized tensor byte count differs from global plan')
+            padding = -tensor_bytes % self.remote.alignment
+            if padding:
+                yield emit(b'\0' * padding)
+            proofs.append({'name': tensor['name'], 'type': tensor['type'], 'bytes': tensor_bytes,
+                           'sha256': tensor_hash.hexdigest()})
+        skip_source(self.descriptor['size'])
+        source_checks = None
+        if self.descriptor.get('sources') is not None:
+            source_checks = self.remote.reader.finish_verified_pass()
+            verified = source_checks.get('sources_verified') if isinstance(source_checks, dict) else None
+            if not isinstance(verified, list) or len(verified) != len(self.descriptor['sources']):
+                raise ValueError('split reader did not verify every immutable original source')
+            for expected, actual in zip(self.descriptor['sources'], verified):
+                if actual.get('sha256_verified') is not True or any(actual.get(key) != expected.get(key) for key in ('repo_id', 'revision', 'filename', 'size', 'sha256')):
+                    raise ValueError('split reader source verification differs from the pinned manifest')
+        elif source_hash.hexdigest() != self.descriptor['sha256'].lower():
+            raise ValueError('complete original GGUF source SHA-256 mismatch')
+        if output_count != self.size:
+            raise RuntimeError('streamed output byte count differs from plan')
+        check()
+        self.receipt = {'source': self.descriptor, 'source_sha256_verified': True,
+                        'sha256': output_hash.hexdigest(), 'size': output_count,
+                        'quant': self.quant, 'tensors': proofs, 'tensor_count': len(proofs),
+                        'native': getattr(self.quantizer, 'identity', {}),
+                        'source_bytes_hashed': cursor,
+                        'max_float_workspace_bytes': ROW_WORK_BYTES,
+                        'source_materialized': False, 'output_materialized': False,
+                        'full_inference_test_performed': False, 'stream_complete': True}
+        if source_checks is not None:
+            self.receipt['source_verification'] = source_checks
+            self.receipt['concatenated_source_sha256'] = source_hash.hexdigest()
 
 
-if __name__ == "__main__":
-    main()
+def stream_quantize(remote, descriptor, quant, quantizer, sink, should_stop=None):
+    """Write bounded output chunks to a pipe/sink, return only a verified receipt."""
+    stream = QuantizedStream(remote, descriptor, quant, quantizer, should_stop)
+    for raw in stream:
+        written = sink.write(raw)
+        if written is not None and written != len(raw):
+            raise RuntimeError('output sink accepted a short write')
+    if hasattr(sink, 'flush'):
+        sink.flush()
+    if not stream.receipt:
+        raise RuntimeError('stream ended without a verified receipt')
+    return stream.receipt
+
+
+class ShardedQuantizedStream:
+    """One global native plan and source pass; tensor-boundary output shards.
+
+    Iteration yields ``(zero_based_shard_index, bounded_bytes)``. Each file is
+    valid split GGUF; tensors never span files. No receipt exists until the full
+    source hashes have passed. Earlier shard ingestion is only unreferenced CAS.
+    ``target_shard_bytes`` includes the header and is a hard per-file cap.
+    """
+    def __init__(self, remote, descriptor, quant, quantizer, should_stop=None,
+                 target_shard_bytes=DEFAULT_SHARD_BYTES):
+        if type(target_shard_bytes) is not int or not 1024 <= target_shard_bytes <= MAX_SHARD_BYTES:
+            raise ValueError('output shard byte limit must be between 1024 and 50000000000')
+        self.base = QuantizedStream(remote, descriptor, quant, quantizer, should_stop)
+        self.used, self.receipt = False, None
+        self.quant, self.target_shard_bytes = quant, target_shard_bytes
+        # Every shard repeats the bounded metadata so headers remain self
+        # describing. UINT16 split ids/count and INT32 total match gguf-split.
+        entries = [entry for entry in remote.metadata_entries if not entry[0].startswith('split.')]
+        entries += [('split.no', 2, struct.pack('<H', 0)),
+                    ('split.count', 2, struct.pack('<H', 0)),
+                    ('split.tensors.count', 5, struct.pack('<i', len(self.base.tensors)))]
+        self._remote = SimpleNamespace(version=remote.version, alignment=remote.alignment,
+                                       metadata_entries=entries)
+        self._entries = entries
+        # Header length is linear in per-tensor entries. Partition with exact
+        # per-tensor sizes; split ids/count have fixed-width values.
+        # Use unpadded header length to avoid off-by-one alignment calculations.
+        replaced = {'general.file_type', 'general.quantization_version'}
+        effective = [e for e in entries if e[0] not in replaced]
+        effective += [('general.file_type', 4, struct.pack('<I', QUANTS[quant])),
+                      ('general.quantization_version', 4, struct.pack('<I', 2))]
+        fixed = 24 + sum(8 + len(key.encode('utf-8')) + 4 + len(raw) for key, _, raw in effective)
+        groups, group, raw_header, data_size = [], [], fixed, 0
+        for tensor in self.base.tensors:
+            entry_size = 8 + len(tensor['name'].encode('utf-8')) + 4 + 8 * len(tensor['shape']) + 12
+            payload_size = tensor['nbytes'] + (-tensor['nbytes'] % remote.alignment)
+            prospective = raw_header + entry_size
+            padded_header = prospective + (-prospective % remote.alignment)
+            if group and padded_header + data_size + payload_size > target_shard_bytes:
+                groups.append(group)
+                group, raw_header, data_size = [], fixed, 0
+                prospective = raw_header + entry_size
+                padded_header = prospective + (-prospective % remote.alignment)
+            if padded_header + data_size + payload_size > target_shard_bytes:
+                raise ValueError('a single complete tensor plus GGUF metadata exceeds the output shard limit')
+            group.append(tensor)
+            raw_header, data_size = prospective, data_size + payload_size
+        if group:
+            groups.append(group)
+        if len(groups) > 1024:
+            raise ValueError('output shard count exceeds the qualified budget')
+        self.shards = []
+        for index, group in enumerate(groups):
+            tensors, offset = [], 0
+            for source in group:
+                tensors.append(dict(source, offset=offset))
+                offset += source['nbytes'] + (-source['nbytes'] % remote.alignment)
+            header_size = fixed + sum(8 + len(tensor['name'].encode('utf-8')) + 4 + 8 * len(tensor['shape']) + 12 for tensor in tensors)
+            header_size += -header_size % remote.alignment
+            size = header_size + offset
+            if size > target_shard_bytes:
+                raise RuntimeError('output shard plan exceeded its exact byte limit')
+            self.shards.append({'index': index, 'header_size': header_size, 'size': size, 'tensors': tensors})
+        self.size = sum(item['size'] for item in self.shards)
+
+    def _header_for(self, shard):
+        entries = [e for e in self._entries if e[0] not in {'split.no', 'split.count'}]
+        entries += [('split.no', 2, struct.pack('<H', shard['index'])),
+                    ('split.count', 2, struct.pack('<H', len(self.shards)))]
+        remote = SimpleNamespace(version=self._remote.version, alignment=self._remote.alignment,
+                                 metadata_entries=entries)
+        result = _output_header(remote, self.quant, shard['tensors'])
+        if len(result) != shard['header_size']:
+            raise RuntimeError('split metadata header differs from planned size')
+        return result
+
+    def __iter__(self):
+        if self.used:
+            raise RuntimeError('a sharded quantized stream cannot be reused')
+        self.used = True
+        iterator = iter(self.base)
+        next(iterator)  # Replace the logical unsplit header with split headers.
+        proofs = []
+        for shard in self.shards:
+            digest, count = hashlib.sha256(), 0
+            raw = self._header_for(shard)
+            digest.update(raw)
+            count += len(raw)
+            yield shard['index'], raw
+            for tensor in shard['tensors']:
+                remaining = tensor['nbytes'] + (-tensor['nbytes'] % self.base.remote.alignment)
+                while remaining:
+                    raw = next(iterator)
+                    if not raw or len(raw) > remaining:
+                        raise RuntimeError('native stream crossed a planned tensor boundary')
+                    remaining -= len(raw)
+                    digest.update(raw)
+                    count += len(raw)
+                    yield shard['index'], raw
+            if count != shard['size']:
+                raise RuntimeError('output shard byte count differs from its exact plan')
+            proofs.append({'index': shard['index'], 'size': count, 'sha256': digest.hexdigest(),
+                           'tensor_names': [tensor['name'] for tensor in shard['tensors']]})
+        try:
+            next(iterator)  # Exhaust source trailer and verify every source SHA.
+        except StopIteration:
+            pass
+        else:
+            raise RuntimeError('native source yielded unplanned tensor data')
+        if not self.base.receipt or self.base.receipt.get('source_sha256_verified') is not True:
+            raise RuntimeError('sharded stream ended without complete source verification')
+        self.receipt = {key: value for key, value in self.base.receipt.items() if key not in {'sha256', 'size'}}
+        self.receipt.update({'shards': proofs, 'size': sum(item['size'] for item in proofs),
+                             'shard_count': len(proofs), 'target_shard_bytes': self.target_shard_bytes,
+                             'logical_unsplit_sha256': self.base.receipt['sha256']})
+
+
+def shard_filename(stem, quant, index, count):
+    if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]*', stem) or quant not in QUANTS or not 0 <= index < count <= 1024:
+        raise ValueError('invalid streamed shard filename components')
+    return f'{stem}-{quant}-requant-{index + 1:05d}-of-{count:05d}.gguf'
+
+
+def _xet_environment(api, repo_id, revision):
+    import hf_xet
+    from huggingface_hub.utils._xet import XetTokenType, xet_connection_info_refresh_url, xet_headers_without_auth
+    if not re.fullmatch('webmp3/[A-Za-z0-9][A-Za-z0-9._-]*', repo_id):
+        raise ValueError('unapproved HF publisher namespace')
+    if api.whoami().get('name') != 'webmp3':
+        raise RuntimeError('wrong HF publisher identity')
+    config = hf_xet.XetConfig().with_config({'data.max_concurrent_file_ingestion': 1,
+        'client.ac_max_upload_concurrency': 4, 'client.ac_initial_upload_concurrency': 2,
+        'shard.cache_size_limit': '256mb', 'shard.chunk_index_table_max_size': 1048576,
+        'telemetry.enabled': False})
+    session = hf_xet.XetSession(config=config)
+    headers = api._build_hf_headers()
+    connection = {'token_refresh_url': xet_connection_info_refresh_url(token_type=XetTokenType.WRITE,
+        repo_id=repo_id, repo_type='model', revision=revision, endpoint=api.endpoint),
+        'token_refresh_headers': headers, 'custom_headers': xet_headers_without_auth(headers)}
+    return hf_xet, session, connection
+
+
+def upload_xet_sharded_stream(api, repo_id, revision, stem, stream):
+    """Stage all split files; finalize CAS only after full-source proof.
+
+    No Hub commit is created here. A separate publisher must require real
+    output inference receipts before adding any staged LFS pointers to a repo.
+    """
+    if not isinstance(stream, ShardedQuantizedStream) or stream.used:
+        raise ValueError('Xet split ingestion requires a fresh sharded quantized stream')
+    names = [shard_filename(stem, stream.quant, i, len(stream.shards)) for i in range(len(stream.shards))]
+    hf_xet, session, connection = _xet_environment(api, repo_id, revision)
+    files, active, index, sample = [], None, -1, b''
+    def finish():
+        nonlocal active
+        native = active.finish().xet_info
+        active = None
+        planned = stream.shards[index]
+        if native.file_size != planned['size'] or not re.fullmatch('[a-fA-F0-9]{64}', native.hash):
+            raise RuntimeError('native Xet shard size/hash disagrees with the split plan')
+        files.append({'path': names[index], 'size': native.file_size, 'sha256': native.sha256,
+                      'xet_hash': native.hash, 'sample_base64': base64.b64encode(sample).decode('ascii')})
+    with session.new_upload_commit(**connection) as commit:
+        try:
+            for next_index, raw in stream:
+                if next_index != index:
+                    if active is not None:
+                        finish()
+                    if next_index != index + 1:
+                        raise RuntimeError('unexpected split output stream order')
+                    index, sample = next_index, b''
+                    active = commit.start_upload_stream(name=names[index], sha256=hf_xet.COMPUTE_SHA256)
+                if len(sample) < 512:
+                    sample = (sample + raw)[:512]
+                written = active.write(raw)
+                if written is not None and written != len(raw):
+                    raise RuntimeError('native Xet shard accepted a short write')
+            if not stream.receipt or stream.receipt.get('source_sha256_verified') is not True:
+                raise RuntimeError('split source receipts are incomplete')
+            if active is not None:
+                finish()
+            proofs = stream.receipt['shards']
+            if len(files) != len(proofs) or any(item['sha256'] != proof['sha256'] or item['size'] != proof['size'] for item, proof in zip(files, proofs)):
+                raise RuntimeError('native Xet shard SHA-256 differs from independent producer')
+        except BaseException:
+            if active is not None:
+                active.abort()
+            raise
+    return {'files': files, 'receipt': stream.receipt, 'native_sha256_verified': True,
+            'hub_commit_created': False, 'published': False}
+
+
+def upload_xet_stream(api, repo_id, revision, filename, stream):
+    """Native Xet ingestion only; caller commits the pointer AFTER receipt gates.
+
+    This helper never publishes a Hub model card or creates a Hub commit.
+    """
+    if not isinstance(stream, QuantizedStream) or stream.used:
+        raise ValueError('Xet ingestion requires a fresh verified quantized stream')
+    if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]*[.]gguf', filename):
+        raise ValueError('invalid streamed GGUF output filename')
+    if stream.size > MAX_SHARD_BYTES:
+        raise ValueError('single streamed file exceeds the qualified Hub file-size budget; split output is required')
+    hf_xet, session, connection = _xet_environment(api, repo_id, revision)
+    sample = b''
+    with session.new_upload_commit(**connection) as commit:
+        native_stream = commit.start_upload_stream(name=filename, sha256=hf_xet.COMPUTE_SHA256)
+        try:
+            for raw in stream:
+                if len(sample) < 512:
+                    sample = (sample + raw)[:512]
+                written = native_stream.write(raw)
+                if written is not None and written != len(raw):
+                    raise RuntimeError('native Xet stream accepted a short write')
+            if not stream.receipt or not stream.receipt['source_sha256_verified']:
+                raise RuntimeError('source/output receipts are incomplete')
+            native = native_stream.finish().xet_info
+            if (native.file_size != stream.receipt['size'] or native.sha256 != stream.receipt['sha256']
+                    or not re.fullmatch('[a-fA-F0-9]{64}', native.hash)):
+                raise RuntimeError('native Xet hash/size differs from independent producer')
+        except BaseException:
+            native_stream.abort()
+            raise
+    return {'path': filename, 'size': native.file_size, 'sha256': native.sha256,
+            'xet_hash': native.hash, 'sample_base64': base64.b64encode(sample).decode('ascii'),
+            'receipt': stream.receipt, 'native_sha256_verified': True,
+            'hub_commit_created': False, 'published': False}

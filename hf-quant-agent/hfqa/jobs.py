@@ -70,11 +70,11 @@ class TransitionError(ValueError):
     pass
 
 
-def dedupe_key(repo_id: str, revision: str | None, quants: list[str], variants: list[str], publish: bool) -> str | None:
+def dedupe_key(repo_id: str, revision: str | None, quants: list[str], variants: list[str], publish: bool, execution_backend: str = "auto") -> str | None:
     """Mutable branches/tags must be resolved before they can identify reusable work."""
     if not revision or not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
         return None
-    return json.dumps([repo_id.lower(), revision.lower(), sorted(set(quants)), sorted(set(variants)), bool(publish)], separators=(",", ":"))
+    return json.dumps([repo_id.lower(), revision.lower(), sorted(set(quants)), sorted(set(variants)), bool(publish), execution_backend], separators=(",", ":"))
 
 
 class JobStore:
@@ -163,9 +163,11 @@ class JobStore:
             columns = {row[1] for row in self.conn.execute("PRAGMA table_info(jobs)")}
             if "variants" not in columns:
                 self.conn.execute("ALTER TABLE jobs ADD COLUMN variants TEXT NOT NULL DEFAULT '[\"normal\"]'")
+            if "execution_backend" not in columns:
+                self.conn.execute("ALTER TABLE jobs ADD COLUMN execution_backend TEXT NOT NULL DEFAULT 'auto'")
             for row in self.conn.execute("SELECT * FROM jobs").fetchall():
                 variants = normalize_variants(json.loads(row["variants"]))
-                key = dedupe_key(row["repo_id"], row["revision"], json.loads(row["quants"]), variants, row["publish"])
+                key = dedupe_key(row["repo_id"], row["revision"], json.loads(row["quants"]), variants, row["publish"], row["execution_backend"])
                 encoded = json.dumps(variants)
                 if row["dedupe_key"] != key or row["variants"] != encoded:
                     self.conn.execute("UPDATE jobs SET dedupe_key=?, variants=? WHERE id=?", (key, encoded, row["id"]))
@@ -178,10 +180,13 @@ class JobStore:
         publish: bool = False,
         revision: str | None = None,
         variants: list[str] | None = None,
+        execution_backend: str = "auto",
     ) -> tuple[dict, bool]:
         from hfqa.heretic import normalize_variants
         chosen = normalize_variants(variants)
-        dedupe = dedupe_key(repo_id, revision, quants, chosen, publish)
+        if execution_backend not in {"auto", "oracle", "github"}:
+            raise ValueError("unsupported execution backend")
+        dedupe = dedupe_key(repo_id, revision, quants, chosen, publish, execution_backend)
         with self._write():
             if dedupe:
                 row = self._duplicate(dedupe)
@@ -191,9 +196,9 @@ class JobStore:
             now = utcnow()
             self.conn.execute(
                 """INSERT INTO jobs
-                   (id, source_url, repo_id, revision, quants, variants, state, dedupe_key, publish, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (jid, source_url, repo_id, revision, json.dumps(quants), json.dumps(chosen), "CREATED", dedupe, int(bool(publish)), now, now),
+                   (id, source_url, repo_id, revision, quants, variants, state, dedupe_key, publish, created_at, updated_at, execution_backend)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (jid, source_url, repo_id, revision, json.dumps(quants), json.dumps(chosen), "CREATED", dedupe, int(bool(publish)), now, now, execution_backend),
             )
             self._event(jid, None, "CREATED", "job created", {"repo_id": repo_id, "quants": quants, "variants": chosen})
             return self.get(jid), True
@@ -276,7 +281,7 @@ class JobStore:
                 raise KeyError(job_id)
             if job["state"] in TERMINAL or job["state"] == "PAUSED":
                 raise TransitionError(f"cannot pin a {job['state']} job")
-            key = dedupe_key(str(fields.get("repo_id") or job["repo_id"]), revision, job["quants"], job["variants"], job["publish"])
+            key = dedupe_key(str(fields.get("repo_id") or job["repo_id"]), revision, job["quants"], job["variants"], job["publish"], job.get("execution_backend", "auto"))
             duplicate = self._duplicate(key, job_id)
             if duplicate:
                 self.conn.execute("UPDATE jobs SET state='CANCELLED', updated_at=?, error=? WHERE id=?", (utcnow(), f"duplicate of {duplicate['id']}", job_id))

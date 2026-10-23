@@ -15,6 +15,7 @@ from hfqa.planner import normalize_quants, plan
 from hfqa.publish import render_readme
 from hfqa.security import as_untrusted_data, redact
 from hfqa.worker import source_descriptor, source_destination
+from hfqa.stream_controller import queue_stream
 
 MAX_LOCAL_REPAIRS = 2
 
@@ -78,7 +79,7 @@ class Orchestrator:
             return self.store.get(job_id)
         if route in {"develop", "needs_converter", "github_standard_unqualified", "blocked"}:
             return self._develop_or_block(job_id)
-        if route in {"oracle_local_requant", "native_gguf_requant"}:
+        if route in {"oracle_local_requant", "native_gguf_requant", "native_gguf_stream"}:
             sibling = ((job.get("analysis") or {}).get("native_gguf_repo") or {}).get("repo_id")
             self.store.transition(
                 job_id,
@@ -95,9 +96,15 @@ class Orchestrator:
         job = self.store.get(job_id)
         if job["state"] != "WAITING_FOR_WORKER":
             return
+        if job.get("execution_backend") in {"oracle", "github"} or (job.get("plan")or{}).get("route")=="native_gguf_stream":
+            queue_stream(self.store,job_id,self.work_dir)
+            return
         try:
             descriptor = source_descriptor(job.get("analysis") or {})
             source = source_destination(descriptor)
+        except ValueError:
+            queue_stream(self.store,job_id,self.work_dir)
+            return
         except Exception as exc:
             self.store.transition(job_id, "BLOCKED", redact(str(exc)))
             return

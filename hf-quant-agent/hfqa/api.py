@@ -7,6 +7,7 @@ import os
 import hmac
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
@@ -47,6 +48,7 @@ class JobCreate(BaseModel):
     quants: list[str] = Field(default_factory=lambda: ["Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M"])
     variants: list[str] = Field(default_factory=lambda: ["normal"])
     publish: bool = False
+    execution_backend: Literal["auto", "oracle", "github"] = "auto"
 
 
 class BudgetUpdate(BaseModel):
@@ -88,7 +90,7 @@ def create_job(body: JobCreate) -> dict:
         variants = normalize_variants(body.variants)
     except (InspectError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    job, created = store.create(body.url, repo_id, quants, publish=body.publish, revision=revision, variants=variants)
+    job, created = store.create(body.url, repo_id, quants, publish=body.publish, revision=revision, variants=variants, execution_backend=body.execution_backend)
     return {"job": _public(job), "created": created}
 
 
@@ -199,7 +201,8 @@ def resume(job_id: str) -> dict:
 
 @app.get("/system", dependencies=[Depends(require_token)])
 def system() -> dict:
-    return {"resources": _resources(), "budget": orchestrator.budget.data, "spark": spark_status()}
+    from hfqa.stream_controller import worker_status
+    return {"resources": _resources(), "budget": orchestrator.budget.data, "spark": spark_status(), "workers": worker_status()}
 
 
 @app.post("/budget", dependencies=[Depends(require_token)])
@@ -237,6 +240,7 @@ def _public(job: dict) -> dict:
         "variants": job.get("variants") or ["normal"],
         "state": job["state"],
         "publish": job["publish"],
+        "execution_backend": job.get("execution_backend", "auto"),
         "error": job.get("error"),
         "analysis": job.get("analysis"),
         "plan": job.get("plan"),

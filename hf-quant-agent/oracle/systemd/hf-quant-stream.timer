@@ -1,0 +1,12 @@
+[Unit]
+Description=Run one queued Oracle GGUF stream staging ticket every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+AccuracySec=30s
+Persistent=false
+Unit=hf-quant-stream.service
+
+[Install]
+WantedBy=timers.target

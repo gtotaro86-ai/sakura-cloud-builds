@@ -132,9 +132,12 @@ def plan(
             actions.append("Native architecture, but weights are not GGUF and no public GGUF repo was found. Stock convert_hf_to_gguf is not qualified. No patch.")
             blockers.append("stock convert_hf_to_gguf is not qualified and no public GGUF sibling was found")
         else:
-            route = "github_standard_unqualified"
-            blockers.append("model exceeds the Oracle local budget and no qualified generic GitHub workflow is registered")
-            actions.append("Plan a free ubuntu-24.04 runner job only after a pinned converter and disk/time budget exist. Do not start a paid runner.")
+            if source_is_gguf or analysis.get("native_gguf_repo"):
+                route = "native_gguf_stream"
+                actions.append("Use bounded HTTP Range streaming on Oracle or a free standard GitHub worker; never download the whole large source to Oracle.")
+            else:
+                route = "github_standard_unqualified"
+                blockers.append("no qualified streaming converter or native GGUF source is registered")
     else:
         route = "blocked"
         blockers.append("no native GGUF support in the pinned stock llama.cpp build; custom patch not started")

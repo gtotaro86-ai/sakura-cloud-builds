@@ -1,0 +1,49 @@
+[Unit]
+Description=Bounded Oracle native GGUF HTTP-to-Xet staging worker
+After=network-online.target hf-quant-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=hf-quant-workers.slice
+User=hfquant
+Group=hfquant
+WorkingDirectory=/opt/hf-quant-agent
+Environment=PYTHONPATH=/opt/hf-quant-agent
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HFQA_STREAM_QUEUE=/var/lib/hf-quant-agent/stream-queue
+Environment=HFQA_STREAM_DB=/var/lib/hf-quant-agent/data/jobs.sqlite
+Environment=HFQA_STREAM_RECEIPTS=/var/lib/hf-quant-agent/stream-receipts
+Environment=HFQA_HF_TOKEN_FILE=/etc/hf-quant-agent/hf.token
+Environment=HF_HOME=/var/lib/hf-quant-agent/stream-cache/huggingface
+Environment=HF_XET_CACHE=/var/lib/hf-quant-agent/stream-cache/xet
+Environment=HF_XET_SHARD_CACHE_SIZE_LIMIT=268435456
+Environment=HF_XET_CHUNK_CACHE_SIZE_BYTES=0
+Environment=HF_XET_NUM_CONCURRENT_RANGE_GETS=4
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=LD_LIBRARY_PATH=/opt/hf-quant-agent/runtime/llama-b11669
+Nice=15
+CPUQuota=50%
+MemoryMax=2G
+MemoryHigh=1500M
+MemorySwapMax=0
+TasksMax=64
+IOSchedulingClass=idle
+TimeoutStartSec=infinity
+TimeoutStopSec=60
+KillSignal=SIGINT
+ExecStart=/opt/hf-quant-agent/.venv/bin/python /opt/hf-quant-agent/scripts/run_oracle_stream_ticket.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/hf-quant-agent/data /var/lib/hf-quant-agent/stream-queue /var/lib/hf-quant-agent/stream-receipts /var/lib/hf-quant-agent/stream-cache
+UMask=0077
