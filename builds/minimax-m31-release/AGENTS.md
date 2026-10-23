@@ -1,0 +1,3 @@
+# Publish the completed MiniMax Q2 variant
+
+The user explicitly requested release of the complete Q2 model as soon as its four jobs finished. Use original run 39908350992, commit 35fe24364aede18b80e7789cff74ae5a4f2bb231, and its exact frozen source/plans/runtime/assets/publisher. Require all four Q2 shard jobs and prerequisites to be successful. Verify immutable HF staging receipts and every main file's size/LFS SHA256, then call the original full-proof assembler and publisher. No partial models, model-body reads, paid resources, or changes/restarts of active Q3–Q5 jobs. The final whole-build finalizer remains configured and can idempotently verify this early Q2 release.
