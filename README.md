@@ -30,3 +30,7 @@ The full Sage workflow must still be qualified in its actual GitHub runner conte
 The owner-reported local reference is a separate Q8-to-Q5_K_M importance-matrix build with Q8/F32 MTP tensors retained. Its performance numbers must not be assigned to the BF16 cloud builds. The local output and raw measurement logs have not been independently inspected here. The reported Q8 source file's size and LFS SHA256 match its pinned public HF revision.
 
 Completed uploads can be finalized with `recover_publish.py` and `.github/workflows/sage-recover.yml` after the pinned projector-copy argument failure. Recovery validates the completed GitHub job log, all source verification events, every tensor boundary and the complete stream hash. It reuses the finalized Xet content without reading model payloads. The recovery manifest explicitly distinguishes reconstructed log evidence from the unavailable original per-tensor receipt.
+
+## Additional model projects
+
+The original BF16 Recursive Flint Q4_K_M/Q5_K_M project is in `builds/flint/`. Root workflows `flint-bf16.yml` and `flint-finalize.yml` construct, publish, verify and recover the releases independently of the chat. See the project README for byte budgets, pinned provenance, proof checkpoints and the one-retry limit.

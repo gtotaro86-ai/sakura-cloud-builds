@@ -8,6 +8,6 @@
 - Keep model files off the user's PC and this Work environment. Use bounded source shards on runner disk and stream final GGUF output through native Xet. Verify original source SHA256, producer output SHA256, Xet SHA256 and final Hub file metadata.
 - Do not log tokens, copy secrets into code, or publish personal builder GitHub links in HF model cards.
 - Public model cards are English with collapsible Chinese, source provenance, exact final sizes, comparisons, usage and license. The user requested no test-scope section. Do not invent benchmark or inference-quality results.
-- A model release requires user authorization. Current authorization covers the original BF16 Sage-A1.5 source and Q4_K_M/Q5_K_M releases in the named webmp3 repositories. Do not infer authorization for unrelated models.
+- A model release requires user authorization. Current authorization covers the original BF16 Sage-A1.5 and RecursiveSI/flint sources and their Q4_K_M/Q5_K_M releases in the named webmp3 repositories. Flint targets: webmp3/Sakura-Flint-Q4_K_M-GGUF and webmp3/Sakura-Flint-Q5_K_M-GGUF; the user explicitly requested autonomous construction and release. Do not infer authorization for unrelated models.
 - Preserve bundled MTP weights. Do not replace them with external draft models.
 - Report actual run IDs, failures and final published file hashes. Prepared scripts and successful metadata checks are not completed full model builds.

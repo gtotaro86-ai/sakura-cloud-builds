@@ -1,0 +1,66 @@
+{
+  "context": "bounded cloud CPU development check",
+  "source_revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288",
+  "source_probe": {
+    "tensor": "model.layers.2.mlp.experts.0.down_proj.weight",
+    "rows": 16,
+    "bytes": 16384,
+    "sha256": "fa016de3fa890761bdc18a7b5b1084b192d305b7aa0bcec187f8ebc710f868af"
+  },
+  "quantized_sha256": {
+    "Q4_K": "1652c0aad89c820aa483432683643271f6cb5e16d97e018589a682e13fb6c348",
+    "Q5_K": "e2488db5b686aab899b7a1438e7824b4ab2792223668362af8d751152436d2cf",
+    "Q6_K": "9d8dbe940eeb365c49da3ad0f437cbebe947be6a565779c172799b043d42de88"
+  },
+  "small_converted_tensors": {
+    "blk.0.attn_norm.weight": "158b6cadb8b5bfd6b9a4e10cc9c487288059096830818f65296d09d238f32ce2",
+    "blk.0.ffn_norm.weight": "475cb23a87ff9b7bf59ad58cd2fb1aade6b594eb8158e205309ccadd81b76c6a",
+    "blk.0.attn_k_norm.weight": "9f5cadac7b18553818be2b4ff3c90e80b1bccfea95651f18d4d4cfb8a4e7267a",
+    "blk.0.attn_q_norm.weight": "6d0b8d83cdaf83098623fababe20186ee2525d0b1822f25f17e2273c85df2846",
+    "blk.0.attn_sinks.weight": "043a5fcdefaac11e8c733dbd8fa8e2ad9fc48523ca86e05f1415963f4e571841",
+    "blk.48.attn_norm.weight": "9e0b03c0fd69fee80b312eade7b7ccbda36eb43d5a03a48a865dde096f28ef14",
+    "blk.48.ffn_norm.weight": "c0067ea643819e964130d61524a935025b4727e312239d6736bd11672b112513",
+    "blk.48.attn_k_norm.weight": "43f166b3534b0526de44fd57033ef8cfcba4db04e393ab2f3ab8f44d94a8d954",
+    "blk.48.attn_q_norm.weight": "6c84e8bef59943859473f4214c3effcfbb373ed27e238e84631f76223892be1e",
+    "blk.48.attn_sinks.weight": "ca858fa4cb8b934cb17d21ade3c4152cb3d8c1c5798308ac21aca39a01e5e163"
+  },
+  "plans": {
+    "Q4_K_M": {
+      "variant": "Q4_K_M",
+      "source_revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288",
+      "llama_revision": "970b51ce7c9ba5fff0726c5e9994f1c2f0e4eedc",
+      "header_size": 5470048,
+      "header_sha256": "7a8c201a75d30505d144775ee2d7a5672b2a1989a78ed8365dbd0ba8549cd8ce",
+      "size": 24166841312,
+      "tensor_count": 779,
+      "types": {
+        "Q6_K": 74,
+        "Q4_K": 412,
+        "F32": 293
+      },
+      "native_full_model_type_plan_verified": true
+    },
+    "Q5_K_M": {
+      "variant": "Q5_K_M",
+      "source_revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288",
+      "llama_revision": "970b51ce7c9ba5fff0726c5e9994f1c2f0e4eedc",
+      "header_size": 5470048,
+      "header_sha256": "335844388bb2543a1ab0abea3a8ae5e28a4d0d63b8fab266230cda936cc3a6ba",
+      "size": 28314254304,
+      "tensor_count": 779,
+      "types": {
+        "Q6_K": 74,
+        "Q5_K": 412,
+        "F32": 293
+      },
+      "native_full_model_type_plan_verified": true
+    }
+  },
+  "range_budget": {
+    "reserved_bytes": 33920,
+    "requests": 11
+  },
+  "model_uploaded": false,
+  "full_inference_test_performed": false,
+  "full_source_files_read": false
+}

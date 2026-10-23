@@ -1,0 +1,81 @@
+name: Flint BF16 CPU quantization and release
+on:
+  workflow_dispatch:
+  push:
+    paths: [builds/flint/request.json]
+permissions:
+  contents: read
+concurrency:
+  group: flint-bf16-release
+  cancel-in-progress: false
+jobs:
+  quantize:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [Q4_K_M, Q5_K_M]
+    defaults:
+      run:
+        working-directory: builds/flint
+    env:
+      REPO_VISIBILITY: ${{ github.event.repository.visibility }}
+      FLINT_STANDARD_RUNNER: ubuntu-24.04
+      OMP_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify authorized source, releases and small code
+        run: |
+          python -c 'import json; p=json.load(open("request.json")); assert p == {"model":"RecursiveSI/flint","source_revision":"2a247be0c0aec895ccb0ac7ca92229ec6df37288","variants":["Q4_K_M","Q5_K_M"],"publish":True,"paid_resources":False,"automatic_transient_retry_limit":1}'
+          sha256sum -c SHA256SUMS
+      - name: Verify HF account before CPU build
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json,urllib.request
+          from credentials import authentication_token
+          req=urllib.request.Request('https://huggingface.co/api/whoami-v2',headers={'Authorization':'Bearer '+authentication_token()})
+          with urllib.request.urlopen(req,timeout=60) as r:info=json.load(r)
+          assert info['name']=='webmp3'
+          print('HF publisher verified; credential value suppressed.')
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 970b51ce7c9ba5fff0726c5e9994f1c2f0e4eedc
+          path: llama
+          persist-credentials: false
+      - name: Install isolated CPU converter and publication clients
+        run: |
+          python -m venv convert-env
+          convert-env/bin/pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+          convert-env/bin/pip install -r requirements-convert.txt
+          python -m venv upload-env
+          upload-env/bin/pip install -r requirements-upload.txt
+      - name: Build pinned CPU quantizer and Flint metadata adapter
+        run: |
+          cmake -S "$GITHUB_WORKSPACE/llama" -B "$RUNNER_TEMP/flint-native" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+          cmake --build "$RUNNER_TEMP/flint-native" --target llama --parallel 4
+          g++ -std=c++17 -shared -fPIC quant_bridge.cpp -I "$GITHUB_WORKSPACE/llama/src" -I "$GITHUB_WORKSPACE/llama/include" -I "$GITHUB_WORKSPACE/llama/ggml/include" -L "$RUNNER_TEMP/flint-native/bin" -Wl,-rpath,'$ORIGIN/bin' -lllama -lggml-base -o "$RUNNER_TEMP/flint-native/lib_flint_quant.so"
+      - name: Verify true BF16 rows and every native target tensor type
+        run: convert-env/bin/python checks.py --llama "$GITHUB_WORKSPACE/llama" --build "$RUNNER_TEMP/flint-native" --work "$RUNNER_TEMP/flint-checks"
+      - name: Validate publication checkpoint and recovery safeguards
+        run: upload-env/bin/python control_checks.py
+      - name: Original BF16 to CPU quantization to native Xet and verified release
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CACHE: ${{ runner.temp }}/flint-xet-cache
+        run: upload-env/bin/python publish.py --variant "${{ matrix.variant }}" --converter-python "$PWD/convert-env/bin/python" --llama "$GITHUB_WORKSPACE/llama" --build "$RUNNER_TEMP/flint-native" --work "$RUNNER_TEMP/flint-build"
+      # No GPU, paid/larger runner, model artifacts, model cache or inference API.
