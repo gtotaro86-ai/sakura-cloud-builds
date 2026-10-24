@@ -6,7 +6,7 @@ from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from hfqa.gguf import validate_gguf
 from hfqa.quantize import test_inference
-from hfqa.publish import sha256_file
+from hfqa.streaming import _sha256 as sha256_file
 from scripts.run_stream_worker import execute, read_manifest
 from scripts.build_stream_bridge import REVISION
 

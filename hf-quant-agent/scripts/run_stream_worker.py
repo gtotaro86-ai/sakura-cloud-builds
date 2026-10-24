@@ -136,8 +136,9 @@ def execute(args):
         if (manifest.get('source_license') or {}).get('redistributable') is not True:
             raise ValueError('Xet staging requires an affirmative source redistribution decision')
         from huggingface_hub import HfApi
-        from scripts.run_worker_ticket import _read_token
-        api = HfApi(token=_read_token())
+        token=os.environ.get('HF_TOKEN','').strip()
+        if not token:raise RuntimeError('HF_TOKEN is required for explicit Xet staging')
+        api = HfApi(token=token)
         target_revision = manifest.get('target_revision', 'main')
     else:
         if source['size'] > LOCAL_PROOF_LIMIT:

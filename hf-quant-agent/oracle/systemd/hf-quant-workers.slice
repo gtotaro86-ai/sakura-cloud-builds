@@ -1,9 +1,0 @@
-[Unit]
-Description=Shared resource ceiling for HF quantization workers; DNS has priority
-
-[Slice]
-CPUQuota=80%
-CPUWeight=10
-MemoryMax=3G
-MemoryHigh=2500M
-MemorySwapMax=0
