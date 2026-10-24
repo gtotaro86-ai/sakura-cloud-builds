@@ -1,0 +1,295 @@
+"""Read-only Hugging Face inspection. Never executes trust_remote_code."""
+
+from __future__ import annotations
+
+import json
+import re
+import struct
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+USER_AGENT = "hf-quant-agent/0.1"
+MAX_CONFIG_BYTES = 2_000_000
+MAX_INDEX_BYTES = 8_000_000
+MAX_SAFETENSORS_HEADER = 8_000_000
+REDISTRIBUTABLE = {
+    "apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause", "isc", "unlicense", "zlib",
+}
+RESTRICTED_HINTS = ("non-commercial", "research only", "no redistribution", "cc-by-nc", "llama2", "llama3")
+
+
+class InspectError(RuntimeError):
+    pass
+
+
+def find_native_gguf_repo(repo_id: str, timeout: float = 20) -> dict | None:
+    """Look for an existing public GGUF repo. Does not download weights or write a patch."""
+    owner, _, name = repo_id.partition("/")
+    candidates = []
+    if name:
+        candidates.extend([f"{owner}/{name}-GGUF", f"{owner}/{name}-gguf"])
+    else:
+        candidates.append(f"{repo_id}-GGUF")
+    for candidate in candidates:
+        try:
+            info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(candidate)}", timeout)
+        except InspectError:
+            continue
+        files = [item.get("rfilename") for item in info.get("siblings") or [] if item.get("rfilename")]
+        gguf_files = [item for item in files if str(item).endswith(".gguf")]
+        if not gguf_files and "gguf" not in (info.get("tags") or []):
+            continue
+        return {
+            "repo_id": info.get("id") or candidate,
+            "revision": info.get("sha"),
+            "architecture": (info.get("gguf") or {}).get("architecture"),
+            "gguf_files": gguf_files[:40],
+            "license": (info.get("cardData") or {}).get("license") or _tag_license(info.get("tags") or []),
+            "license_decision": classify_license((info.get("cardData") or {}).get("license") or _tag_license(info.get("tags") or []), info.get("cardData") or {}),
+            "weights_downloaded": False,
+        }
+    return None
+
+
+def parse_hf_url(value: str) -> tuple[str, str | None]:
+    text = (value or "").strip()
+    if not text:
+        raise InspectError("empty Hugging Face URL")
+    text = text.split("?", 1)[0].rstrip("/")
+    match = re.match(r"https?://huggingface\.co/([^/]+)(?:/([^/]+))?(?:/tree/([^/]+))?", text)
+    if match:
+        owner, name, rev = match.group(1), match.group(2), match.group(3)
+        if owner in {"datasets", "spaces", "docs", "login"}:
+            raise InspectError("only model repositories are accepted")
+        if name:
+            return f"{owner}/{name}", rev
+        return owner, rev
+    if re.match(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?$", text):
+        return text, None
+    raise InspectError("not a Hugging Face model URL or repo id")
+
+
+def _get(url: str, timeout: float = 30, headers: dict | None = None, max_bytes: int = MAX_INDEX_BYTES) -> tuple[int, dict, bytes]:
+    req_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    request = urllib.request.Request(url, headers=req_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status
+            resp_headers = dict(response.headers)
+            body = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(500).decode("utf-8", "replace")
+        raise InspectError(f"HTTP {exc.code} for {url}: {detail[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise InspectError(f"network error for {url}: {exc.reason}") from exc
+    if len(body) > max_bytes:
+        raise InspectError(f"response exceeds {max_bytes} bytes: {url}")
+    return status, resp_headers, body
+
+
+def _json(url: str, timeout: float = 30) -> Any:
+    _, _, body = _get(url, timeout=timeout)
+    try:
+        return json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise InspectError(f"invalid JSON from {url}") from exc
+
+
+def inspect_repo(source: str, timeout: float = 30) -> dict:
+    repo_id, requested_rev = parse_hf_url(source)
+    info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(repo_id)}", timeout)
+    sha = info.get("sha")
+    if not sha:
+        raise InspectError("model API did not return a commit SHA")
+    revision = requested_rev or sha
+    if requested_rev and requested_rev != sha:
+        # Pin the requested ref by resolving it. A branch name is not a frozen revision.
+        resolved = _json(
+            f"https://huggingface.co/api/models/{urllib.parse.quote(repo_id)}/revision/{urllib.parse.quote(requested_rev)}",
+            timeout,
+        )
+        revision = resolved.get("sha")
+        if not revision:
+            raise InspectError("requested revision could not be pinned")
+        info = resolved
+    card = info.get("cardData") or {}
+    license_id = card.get("license") or _tag_license(info.get("tags") or [])
+    config = _read_config(repo_id, revision, timeout)
+    siblings = info.get("siblings") or []
+    files = [item.get("rfilename") for item in siblings if item.get("rfilename")]
+    weight_files = [name for name in files if name.endswith((".safetensors", ".gguf", ".bin"))]
+    index = _read_index(repo_id, revision, files, timeout)
+    tensor_sample = None
+    if not index and any(name.endswith(".safetensors") and "index" not in name for name in files):
+        first = next(name for name in files if name.endswith(".safetensors"))
+        tensor_sample = read_safetensors_header(repo_id, revision, first, timeout)
+    safetensors = info.get("safetensors") or {}
+    parameters = safetensors.get("total")
+    gguf = info.get("gguf") or {}
+    license_decision = classify_license(license_id, card)
+    return {
+        "repo_id": repo_id,
+        "requested_revision": requested_rev,
+        "revision": revision,
+        "private": bool(info.get("private")),
+        "gated": bool(info.get("gated")),
+        "pipeline_tag": info.get("pipeline_tag"),
+        "library_name": info.get("library_name"),
+        "model_type": (config or {}).get("model_type") or gguf.get("architecture"),
+        "architectures": (config or {}).get("architectures") or [],
+        "num_hidden_layers": (config or {}).get("num_hidden_layers"),
+        "num_experts": (config or {}).get("num_experts") or (config or {}).get("num_local_experts"),
+        "num_experts_per_tok": (config or {}).get("num_experts_per_tok"),
+        "hidden_size": (config or {}).get("hidden_size"),
+        "vocab_size": (config or {}).get("vocab_size"),
+        "max_position_embeddings": (config or {}).get("max_position_embeddings") or gguf.get("context_length"),
+        "torch_dtype": (config or {}).get("torch_dtype"),
+        "parameters": parameters,
+        "used_storage": info.get("usedStorage"),
+        "license": license_id,
+        "license_decision": license_decision,
+        "custom_code": "custom_code" in (info.get("tags") or []) or bool((config or {}).get("auto_map")),
+        "trust_remote_code_executed": False,
+        "files": files[:200],
+        "file_count": len(files),
+        "weight_files": weight_files[:80],
+        "formats": detect_formats(files, config, gguf),
+        "gguf_architecture": gguf.get("architecture"),
+        "tensor_index": index,
+        "safetensors_header_sample": tensor_sample,
+        "has_chat_template": bool((config or {}).get("chat_template") or gguf.get("chat_template")),
+        "source_url": f"https://huggingface.co/{repo_id}",
+        "card_excerpt_untrusted": None,
+    }
+
+
+def _tag_license(tags: list[str]) -> str | None:
+    for tag in tags:
+        if tag.startswith("license:"):
+            return tag.split(":", 1)[1]
+    return None
+
+
+def _read_config(repo_id: str, revision: str, timeout: float) -> dict | None:
+    url = (
+        f"https://huggingface.co/{urllib.parse.quote(repo_id)}/resolve/"
+        f"{urllib.parse.quote(revision)}/config.json"
+    )
+    try:
+        _, _, body = _get(url, timeout=timeout, headers={"Accept": "application/json"}, max_bytes=MAX_CONFIG_BYTES)
+    except InspectError:
+        return None
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_index(repo_id: str, revision: str, files: list[str], timeout: float) -> dict | None:
+    name = next((item for item in files if item.endswith(".safetensors.index.json")), None)
+    if not name:
+        return None
+    url = (
+        f"https://huggingface.co/{urllib.parse.quote(repo_id)}/resolve/"
+        f"{urllib.parse.quote(revision)}/{urllib.parse.quote(name)}"
+    )
+    try:
+        _, _, body = _get(url, timeout=timeout, max_bytes=MAX_INDEX_BYTES)
+        data = json.loads(body.decode("utf-8"))
+    except (InspectError, json.JSONDecodeError):
+        return {"error": "index unreadable", "path": name}
+    weight_map = data.get("weight_map") or {}
+    dtypes: dict[str, int] = {}
+    shapes_sample = []
+    metadata = data.get("metadata") or {}
+    # Index files usually do not contain shapes. Report coverage only.
+    return {
+        "path": name,
+        "tensor_count": len(weight_map),
+        "shard_count": len(set(weight_map.values())),
+        "total_size": metadata.get("total_size"),
+        "dtype_counts": dtypes,
+        "shape_sample": shapes_sample,
+        "names_sample": list(weight_map)[:12],
+    }
+
+
+def read_safetensors_header(repo_id: str, revision: str, path: str, timeout: float = 30) -> dict:
+    """Read only the safetensors JSON header via HTTP ranges. No weight download."""
+    url = (
+        f"https://huggingface.co/{urllib.parse.quote(repo_id)}/resolve/"
+        f"{urllib.parse.quote(revision)}/{urllib.parse.quote(path)}"
+    )
+    status, headers, prefix = _get(
+        url, timeout=timeout, headers={"Range": "bytes=0-7", "Accept": "application/octet-stream"}, max_bytes=16
+    )
+    if status not in (200, 206) or len(prefix) < 8:
+        return {"path": path, "error": f"header prefix unavailable (status {status})"}
+    header_len = struct.unpack("<Q", prefix[:8])[0]
+    if header_len <= 0 or header_len > MAX_SAFETENSORS_HEADER:
+        return {"path": path, "error": f"refusing header length {header_len}"}
+    end = 8 + header_len - 1
+    _, _, blob = _get(
+        url,
+        timeout=timeout,
+        headers={"Range": f"bytes=8-{end}", "Accept": "application/octet-stream"},
+        max_bytes=header_len + 8,
+    )
+    try:
+        header = json.loads(blob[:header_len].decode("utf-8"))
+    except json.JSONDecodeError:
+        return {"path": path, "error": "safetensors header is not JSON"}
+    tensors = {k: v for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)}
+    dtype_counts: dict[str, int] = {}
+    for spec in tensors.values():
+        dtype = str(spec.get("dtype") or "unknown")
+        dtype_counts[dtype] = dtype_counts.get(dtype, 0) + 1
+    sample = []
+    for name, spec in list(tensors.items())[:8]:
+        sample.append({"name": name, "dtype": spec.get("dtype"), "shape": spec.get("shape")})
+    return {
+        "path": path,
+        "tensor_count": len(tensors),
+        "dtype_counts": dtype_counts,
+        "shape_sample": sample,
+        "metadata_keys": list((header.get("__metadata__") or {}).keys())[:20],
+        "weights_downloaded": False,
+    }
+
+
+def detect_formats(files: list[str], config: dict | None, gguf: dict) -> list[str]:
+    found = []
+    joined = " ".join(files).lower()
+    if any(name.endswith(".gguf") for name in files) or gguf:
+        found.append("gguf")
+    if any(name.endswith(".safetensors") for name in files):
+        found.append("safetensors")
+    if "mxfp8" in joined or (config or {}).get("quantization_config", {}).get("quant_method") == "mxfp8":
+        found.append("mxfp8")
+    if "nvfp4" in joined:
+        found.append("nvfp4")
+    if "fp8" in joined:
+        found.append("fp8")
+    dtype = str((config or {}).get("torch_dtype") or "").lower()
+    if dtype:
+        found.append(dtype)
+    return found
+
+
+def classify_license(license_id: str | None, card: dict) -> dict:
+    normalized = (license_id or "").strip().lower()
+    blob = json.dumps(card, ensure_ascii=False).lower()
+    restricted = any(hint in blob or hint in normalized for hint in RESTRICTED_HINTS)
+    if not normalized:
+        return {"redistributable": False, "reason": "license not declared; publication blocked"}
+    if restricted or normalized not in REDISTRIBUTABLE:
+        return {
+            "redistributable": False,
+            "reason": f"license {normalized or 'undeclared'} is not in the automatic redistribution allow-list",
+        }
+    return {"redistributable": True, "reason": f"{normalized} allows redistribution with attribution"}

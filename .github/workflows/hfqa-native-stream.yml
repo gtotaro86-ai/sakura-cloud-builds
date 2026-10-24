@@ -1,0 +1,85 @@
+name: HFQA native GGUF streaming
+run-name: HFQA stream ${{ inputs.job_id || 'qualification' }}
+'on':
+  push:
+    branches: [codex/hfqa-native-stream]
+    paths: ['hf-quant-agent/**', '.github/workflows/hfqa-native-stream.yml']
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Controller job identifier
+        required: false
+        default: qualification
+      mode:
+        type: choice
+        options: [proof, stage]
+        default: proof
+      manifest_json:
+        description: Immutable source manifest JSON; empty uses the fixed small qualification fixture
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: hfqa-native-stream-${{ inputs.job_id || github.ref }}
+  cancel-in-progress: false
+jobs:
+  stream:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      HFQA_STREAM_MODE: ${{ inputs.mode || 'proof' }}
+      HFQA_MANIFEST_JSON: ${{ inputs.manifest_json }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Prepare pinned native runtime and isolated dependencies
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/hfqa-env"
+          "$RUNNER_TEMP/hfqa-env/bin/pip" install numpy==2.2.6 huggingface_hub==2.3.0 hf-xet==1.7.0
+          python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" > "$RUNNER_TEMP/hfqa-runtime-path"
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          python scripts/build_stream_bridge.py --runtime "$runtime_dir" --destination "$RUNNER_TEMP/hfqa-bridge"
+      - name: Validate metadata and tests without repository code execution
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/hfqa-env/bin/python" -m unittest discover -s tests -q
+          python - <<'PY'
+          import json, os, pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          raw=os.environ.get('HFQA_MANIFEST_JSON','')
+          if len(raw)>100000: raise ValueError('dispatch manifest exceeds input budget')
+          data=json.loads(raw) if raw.strip() else json.loads(pathlib.Path('github/requests/stream-smoke.json').read_text(encoding='utf-8-sig'))
+          (root/'hfqa-request.json').write_text(json.dumps(data),encoding='utf-8')
+          PY
+      - name: Stream bounded native rows and verify source digests
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          export LD_LIBRARY_PATH="$runtime_dir"
+          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/stream_ci.py --manifest "$RUNNER_TEMP/hfqa-request.json" --runtime "$runtime_dir" --bridge "$RUNNER_TEMP/hfqa-bridge/libhfqa_plan.so" --work "$RUNNER_TEMP/hfqa-result" --mode "$HFQA_STREAM_MODE"
+      - name: Retain receipts and actual runtime evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hfqa-stream-receipts-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/hfqa-result/**/*.json
+            ${{ runner.temp }}/hfqa-result/**/*.log
+            ${{ runner.temp }}/hfqa-bridge/build-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
