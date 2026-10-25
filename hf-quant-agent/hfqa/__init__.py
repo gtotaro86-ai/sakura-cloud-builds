@@ -1,3 +1,3 @@
 """Local control plane for Hugging Face GGUF quantization."""
 
-__version__ = "0.3.0"
+__version__ = "0.9.0"

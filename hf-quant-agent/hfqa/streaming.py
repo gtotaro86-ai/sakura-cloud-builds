@@ -508,10 +508,8 @@ def shard_filename(stem, quant, index, count):
 def _xet_environment(api, repo_id, revision):
     import hf_xet
     from huggingface_hub.utils._xet import XetTokenType, xet_connection_info_refresh_url, xet_headers_without_auth
-    if not re.fullmatch('webmp3/[A-Za-z0-9][A-Za-z0-9._-]*', repo_id):
-        raise ValueError('unapproved HF publisher namespace')
-    if api.whoami().get('name') != 'webmp3':
-        raise RuntimeError('wrong HF publisher identity')
+    from hfqa.target_policy import authorize_target
+    authorize_target(repo_id,api.whoami())
     config = hf_xet.XetConfig().with_config({'data.max_concurrent_file_ingestion': 1,
         'client.ac_max_upload_concurrency': 4, 'client.ac_initial_upload_concurrency': 2,
         'shard.cache_size_limit': '256mb', 'shard.chunk_index_table_max_size': 1048576,

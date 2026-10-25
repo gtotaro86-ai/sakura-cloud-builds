@@ -46,7 +46,10 @@ class RangeReader:
             if response.headers.get('Content-Encoding', 'identity') not in ('identity',''):
                 raise IOError('compressed range response rejected')
             blob=response.read(count+1)
-        if len(blob)!=count:raise IOError('truncated or oversized range response')
+        if len(blob)<count:
+            from hfqa.retries import TransientTransferError
+            raise TransientTransferError('truncated range response')
+        if len(blob)>count:raise IOError('oversized range response')
         self.bytes_read+=len(blob);self.request_count+=1
         return blob
 

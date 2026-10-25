@@ -121,7 +121,26 @@ def inspect_repo(source: str, timeout: float = 30) -> dict:
     config = _read_config(repo_id, revision, timeout)
     siblings = info.get("siblings") or []
     files = [item.get("rfilename") for item in siblings if item.get("rfilename")]
+    model_index = None
+    if "model_index.json" in files:
+        try:
+            _, _, raw = _get(f"https://huggingface.co/{urllib.parse.quote(repo_id)}/resolve/{revision}/model_index.json", timeout=timeout, max_bytes=MAX_CONFIG_BYTES)
+            candidate = json.loads(raw.decode("utf-8"))
+            if isinstance(candidate, dict):
+                model_index = candidate
+        except (InspectError, ValueError):
+            pass
     weight_files = [name for name in files if name.endswith((".safetensors", ".gguf", ".bin"))]
+    from hfqa.image_components import component_files, extract_component_references
+    readme = ''
+    image_hint = (info.get('pipeline_tag') in {'text-to-image','image-to-image','image-text-to-image','text-to-video','image-to-video'}
+                  or info.get('library_name') == 'diffusers' or 'image' in repo_id.lower())
+    if image_hint and 'README.md' in files:
+        try:
+            _, _, raw = _get(f'https://huggingface.co/{urllib.parse.quote(repo_id)}/resolve/{revision}/README.md', timeout=timeout, max_bytes=262144)
+            readme = raw.decode('utf-8', 'replace')
+        except InspectError:
+            pass
     index = _read_index(repo_id, revision, files, timeout)
     tensor_sample = None
     if not index and any(name.endswith(".safetensors") and "index" not in name for name in files):
@@ -131,14 +150,20 @@ def inspect_repo(source: str, timeout: float = 30) -> dict:
     parameters = safetensors.get("total")
     gguf = info.get("gguf") or {}
     license_decision = classify_license(license_id, card)
+    from hfqa.provenance import identify
     return {
         "repo_id": repo_id,
+        "model_provenance": identify(info,repo_id,revision),
         "requested_revision": requested_rev,
         "revision": revision,
         "private": bool(info.get("private")),
         "gated": bool(info.get("gated")),
         "pipeline_tag": info.get("pipeline_tag"),
         "library_name": info.get("library_name"),
+        "model_index": model_index,
+        "component_files": component_files(files),
+        "component_references": extract_component_references(readme, card),
+        "config": {key: config[key] for key in ("_class_name", "model_type", "architectures") if key in (config or {})},
         "model_type": (config or {}).get("model_type") or gguf.get("architecture"),
         "architectures": (config or {}).get("architectures") or [],
         "num_hidden_layers": (config or {}).get("num_hidden_layers"),
