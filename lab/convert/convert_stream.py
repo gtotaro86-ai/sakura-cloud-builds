@@ -200,6 +200,7 @@ def main() -> int:
             import subprocess
             from huggingface_hub import snapshot_download
             local_model = snapshot_download(args.model, local_dir=str(args.work / 'localmodel'))
+            (args.work / 'local').mkdir(parents=True, exist_ok=True)
             subprocess.run([sys.executable, str(args.llama / 'convert_hf_to_gguf.py'), local_model, '--outtype', args.outtype, '--split-max-size', args.split_max_size,
                             '--outfile', str(args.work / 'local' / 'model.gguf')], check=True, env={**os.environ, 'PYTHONPATH': str(args.llama / 'gguf-py')})
             compared['ours (local conversion)'] = merged_table(sorted((args.work / 'local').glob('*.gguf')))
