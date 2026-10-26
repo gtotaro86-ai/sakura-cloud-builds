@@ -24,7 +24,26 @@ class InspectError(RuntimeError):
     pass
 
 
-def find_native_gguf_repo(repo_id: str, timeout: float = 20) -> dict | None:
+def find_own_bf16_repo(repo_id: str, revision: str | None, timeout: float = 20) -> dict | None:
+    """Our own earlier BF16 conversion of exactly this revision (the converter writes the revision into the card), reused instead of converting again."""
+    if not revision:
+        return None
+    from hfqa.stream_controller import output_stem
+    candidate = f"webmp3/{output_stem({'repo_id': repo_id})}-BF16-GGUF"
+    try:
+        info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(candidate)}", timeout)
+    except InspectError:
+        return None
+    card = info.get("cardData") or {}
+    files = [item.get("rfilename") for item in info.get("siblings") or [] if str(item.get("rfilename")).endswith(".gguf")]
+    if not files or card.get("hfqa_source_revision") != revision or card.get("base_model") != repo_id or info.get("private"):
+        return None
+    return {"repo_id": info.get("id") or candidate, "revision": info.get("sha"), "architecture": (info.get("gguf") or {}).get("architecture"), "gguf_files": files[:40],
+            "license": card.get("license"), "license_decision": classify_license(card.get("license"), _absolute_license_link(card, info.get("id") or candidate, info.get("sha"))),
+            "weights_downloaded": False, "source_precision": "bf16", "converted_by_agent": True, "converter_revision": card.get("hfqa_converter_revision")}
+
+
+def find_native_gguf_repo(repo_id: str, timeout: float = 20, revision: str | None = None) -> dict | None:
     """Look for an existing public GGUF repo. Does not download weights or write a patch."""
     owner, _, name = repo_id.partition("/")
     candidates = []
@@ -52,9 +71,9 @@ def find_native_gguf_repo(repo_id: str, timeout: float = 20) -> dict | None:
             "weights_downloaded": False,
         }
     try:
-        return find_third_party_gguf_repo(repo_id, timeout)
+        return find_third_party_gguf_repo(repo_id, timeout) or find_own_bf16_repo(repo_id, revision, timeout)
     except InspectError:
-        return None
+        return find_own_bf16_repo(repo_id, revision, timeout)
 
 
 # Only established quantizers are trusted to have converted the ORIGINAL weights unchanged. A repository of anyone else,

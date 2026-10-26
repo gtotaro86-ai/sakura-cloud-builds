@@ -54,7 +54,7 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "UPLOADING": frozenset({"VERIFYING", "FAILED", "BLOCKED", "CANCELLED", "PAUSED"}),
     "VERIFYING": frozenset({"COMPLETED", "FAILED", "BLOCKED", "UPLOADING", "PAUSED", "CANCELLED"}),
     "WAITING_FOR_WORKER": frozenset({
-        "QUANTIZING", "VALIDATING", "UPLOADING", "VERIFYING",
+        "QUANTIZING", "VALIDATING", "UPLOADING", "VERIFYING", "PLANNING",  # PLANNING: the BF16 conversion finished, plan again from its repository
         "BLOCKED", "FAILED", "CANCELLED", "PAUSED", "COMPLETED",
     }),
     "ESCALATING": frozenset({"DEVELOPING", "TESTING", "BLOCKED", "FAILED", "CANCELLED"}),

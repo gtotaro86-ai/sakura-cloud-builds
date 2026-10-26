@@ -41,14 +41,12 @@ def markdown(analysis):
     value=assignment(analysis)
     bases=', '.join(f'[{name}](https://huggingface.co/{name})' for name in value.get('declared_base_models') or [] if model_id(name)) or 'not declared'
     repo=value['input_repo_id'];primary=value['model_repo_id']
-    return (f"- Model/checkpoint identity: [{primary}](https://huggingface.co/{primary})\n"
-            f"- Submitted repository: [{repo}](https://huggingface.co/{repo})\n"
-            f"- Submitted commit: `{value['input_revision']}`\n"
-            f"- Declared base models: {bases}\n"
-            f"- Declared relation: `{value['relation']}`\n"
-            f"- Declared base-model commit revisions: {'not resolved by this metadata; quantization-input commits are recorded separately' if value.get('declared_base_models') else 'not applicable'}\n"
-            f"- Attribution evidence: [pinned model card]({value['metadata_source']})\n"
-            "- Assignment comes from metadata. A name match or a model-card declaration is not a runtime/quality test.\n")
+    lines = [f"- Original model: [{primary}](https://huggingface.co/{primary}), commit `{value['input_revision']}` ([model card at that commit]({value['metadata_source']}))"]
+    if repo != primary:
+        lines.append(f"- Submitted repository: [{repo}](https://huggingface.co/{repo})")
+    if value.get('declared_base_models'):
+        lines.append(f"- Declared base models: {bases} (relation: `{value['relation']}`)")
+    return "\n".join(lines) + "\n"
 
 
 def yaml_base_model(analysis):
