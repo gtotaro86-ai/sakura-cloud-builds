@@ -71,9 +71,34 @@ def patch_writer(llama: Path, shards: Shards):
     gguf_writer.GGUFWriter.write_tensors_to_file = write_tensors_to_file
 
 
+def patch_remote_probe(model: str):
+    """The converter decides 'is there a model.safetensors?' with one HEAD request. Report what that request sees and, if it says no for a file
+    the Hub does list, answer from the Hub's own file listing instead (the converter's answer is only used to pick single-file or sharded)."""
+    import re
+    import requests
+    from huggingface_hub import HfApi
+    from gguf.utility import SafetensorRemote
+    probe = f'https://huggingface.co/{model}/resolve/main/model.safetensors'
+    try:
+        reply = requests.head(probe, allow_redirects=True, headers={**SafetensorRemote._get_request_headers(), 'Range': 'bytes=0-0'}, timeout=60)
+        print(json.dumps({'probe_status': reply.status_code, 'probe_url': reply.url[:80]}), flush=True)
+    except Exception as error:  # noqa: BLE001 - diagnostics only
+        print(json.dumps({'probe_error': type(error).__name__ + ': ' + str(error)[:160]}), flush=True)
+    original = SafetensorRemote.check_file_exist.__func__
+    api = HfApi()
+
+    def check_file_exist(cls, url):
+        if original(cls, url):
+            return True
+        found = re.match(r'https://huggingface\.co/(.+?)/resolve/main/(.+)$', url)
+        return bool(found) and api.file_exists(found.group(1), found.group(2))
+    SafetensorRemote.check_file_exist = classmethod(check_file_exist)
+
+
 def convert(llama: Path, model: str, outtype: str, split: str, out_dir: Path, shards: Shards):
     out_dir.mkdir(parents=True, exist_ok=True)
     patch_writer(llama, shards)
+    patch_remote_probe(model)
     argv = ['convert_hf_to_gguf.py', '--remote', '--outtype', outtype, '--split-max-size', split, '--outfile', str(out_dir / 'model.gguf'), model]
     sys.argv = argv
     started = time.time()
@@ -116,6 +141,8 @@ def main() -> int:
     parser.add_argument('--private', action='store_true')
     args = parser.parse_args()
     os.environ['LLAMA_DIR'] = str(args.llama)
+    if args.mode == 'parity':
+        os.environ.pop('HF_TOKEN', None)  # public models only; no credential is needed or sent
     report = {'mode': args.mode, 'model': args.model, 'outtype': args.outtype, 'split_max_size': args.split_max_size}
 
     if args.mode == 'release':
