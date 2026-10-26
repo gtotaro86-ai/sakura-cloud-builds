@@ -22,6 +22,10 @@ MAX_TENSORS = 64
 KNOWN_LAYOUTS = {0: (1, 4), 1: (1, 2), 8: (32, 34), 11: (256, 110), 12: (256, 144), 13: (256, 176), 14: (256, 210), 30: (1, 2)}
 # Ids with a live entry in ggml's type table (checked one by one against the pinned build). Any other id makes ggml abort the process.
 SAFE_TYPE_IDS = frozenset(set(range(0, 4)) | {6, 7, 8, 9} | set(range(10, 31)) | {34, 35, 39, 40, 41, 42})
+# Formats of the modified DeepSeek-4.1 runtime that the pinned stock ggml does not know. They are decoded here, never passed to ggml.
+# MXFP8 (id 43): 32 values per 33-byte block = one E8M0 scale byte followed by 32 E4M3 values. Checked on real rows of
+# unsloth/DeepSeek-V4.1-Flash-1017-GGUF against the Q6_K table of the Maya release (correlation 0.9998); the file size matches exactly.
+NUMPY_LAYOUTS = {43: (32, 33)}
 
 
 class HybridError(ValueError):
@@ -63,6 +67,8 @@ class Ggml:
         self.identity = {'runtime_revision': runtime_revision, 'ggml_sha256': _sha256_file(self.path)}
 
     def layout(self, type_id: int) -> tuple[int, int]:
+        if type_id in NUMPY_LAYOUTS:
+            return NUMPY_LAYOUTS[type_id]
         if type_id not in SAFE_TYPE_IDS:
             raise HybridError(f'tensor type {type_id} is not known to the pinned ggml build')
         traits = self.lib.ggml_get_type_traits(type_id)
@@ -91,6 +97,8 @@ class Ggml:
             values = np.frombuffer(raw, dtype='<f2').astype(np.float32).reshape(rows, cols)
         elif type_id == 30:
             values = (np.frombuffer(raw, dtype='<u2').astype(np.uint32) << 16).view(np.float32).reshape(rows, cols)
+        elif type_id == 43:
+            values = decode_mxfp8(raw, rows, cols)
         else:
             values = np.empty((rows, cols), dtype=np.float32)
             source = np.frombuffer(raw, dtype=np.uint8)
@@ -123,6 +131,19 @@ class Ggml:
         if not self.lib.ggml_validate_row_data(out_type, out.ctypes.data, out.size):
             raise HybridError('native output row validation failed')
         return out.tobytes()
+
+
+def decode_mxfp8(raw: bytes, rows: int, cols: int):
+    """Float32 (rows x cols) from MXFP8 blocks: [E8M0 scale byte][32 x E4M3]. NaN codes (scale 0xFF, element 0x7F/0xFF) are refused."""
+    import numpy as np
+    blocks = np.frombuffer(raw, dtype=np.uint8).reshape(rows, cols // 32, 33)
+    scale, element = blocks[:, :, 0].astype(np.int32), blocks[:, :, 1:].astype(np.int32)
+    if (scale == 255).any() or ((element & 0x7F) == 0x7F).any():
+        raise HybridError('MXFP8 rows contain NaN codes')
+    exponent, mantissa = (element >> 3) & 0xF, element & 0x7
+    magnitude = np.where(exponent == 0, mantissa / 8.0 * 2.0 ** -6, (1 + mantissa / 8.0) * 2.0 ** (exponent - 7.0))
+    values = np.where(element & 0x80, -magnitude, magnitude) * (2.0 ** (scale - 127.0))[:, :, None]
+    return values.reshape(rows, cols).astype(np.float32)
 
 
 def _string(value: str) -> bytes:

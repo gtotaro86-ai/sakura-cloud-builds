@@ -120,14 +120,17 @@ class _Header:
         raise GGUFError(f'unsupported metadata type {kind}')
 
 
-def inspect_remote_gguf(descriptor: dict, *, reader=None, max_header_bytes=MAX_HEADER_BYTES, allow_split=False) -> RemoteGGUF:
+def inspect_remote_gguf(descriptor: dict, *, reader=None, max_header_bytes=MAX_HEADER_BYTES, allow_split=False, extra_layouts=None) -> RemoteGGUF:
+    """`extra_layouts` names tensor formats of a modified runtime ({type id: (elements per block, bytes per block)}) that the caller can
+    handle; they are checked against the file size like every stock format."""
     reader=reader or RangeReader(descriptor)
+    layouts={**TENSOR_LAYOUTS,**(extra_layouts or {})}
     h=_Header(reader,max_header_bytes)
     if h.read(4)!=b'GGUF':raise GGUFError('invalid remote GGUF magic')
     version=h.u32()
     if version not in (2,3):raise GGUFError('unsupported remote GGUF version')
     count,kv_count=h.u64(),h.u64()
-    if count==0 or count>1_000_000 or kv_count>100_000:raise GGUFError('unreasonable GGUF tensor or metadata count')
+    if count>1_000_000 or kv_count>100_000:raise GGUFError('unreasonable GGUF tensor or metadata count')
     entries=[];metadata={}
     for _ in range(kv_count):
         key=h.string()
@@ -137,6 +140,8 @@ def inspect_remote_gguf(descriptor: dict, *, reader=None, max_header_bytes=MAX_H
     alignment=metadata.get('general.alignment',32)
     if type(alignment) is not int or alignment<1 or alignment>4096 or alignment&(alignment-1):
         raise GGUFError('invalid GGUF alignment')
+    if count==0 and not (allow_split and type(metadata.get('split.count')) is int and metadata['split.count']>1):
+        raise GGUFError('unreasonable GGUF tensor or metadata count')  # only a metadata shard of a split set may hold no tensors
     arch=metadata.get('general.architecture')
     secondary=allow_split and type(metadata.get('split.no')) is int and metadata['split.no']>0
     if not secondary and (not isinstance(arch,str) or not re.fullmatch('[a-z0-9_-]+',arch)):raise GGUFError('GGUF source has no valid architecture')
@@ -148,9 +153,9 @@ def inspect_remote_gguf(descriptor: dict, *, reader=None, max_header_bytes=MAX_H
         names.add(name);ndim=h.u32()
         if ndim<1 or ndim>4:raise GGUFError('invalid tensor dimensions')
         shape=tuple(h.u64() for _ in range(ndim));kind=h.u32();offset=h.u64()
-        if any(x<=0 or x>2**40 for x in shape) or kind not in TENSOR_LAYOUTS or offset%alignment:
+        if any(x<=0 or x>2**40 for x in shape) or kind not in layouts or offset%alignment:
             raise GGUFError('unsupported or invalid remote tensor layout')
-        block,width=TENSOR_LAYOUTS[kind]
+        block,width=layouts[kind]
         if shape[0]%block:raise GGUFError('tensor row does not fit native blocks')
         elements=1
         for n in shape:elements*=n

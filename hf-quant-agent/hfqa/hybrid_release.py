@@ -26,7 +26,7 @@ SELF_CHECK_TOLERANCE = 0.30
 
 def open_remote(descriptor: dict):
     reader = BufferedRangeReader(RangeReader(descriptor))
-    return inspect_remote_gguf(descriptor, reader=reader, allow_split=True)
+    return inspect_remote_gguf(descriptor, reader=reader, allow_split=True, extra_layouts=hybrid.NUMPY_LAYOUTS)
 
 
 class _LocalReader:

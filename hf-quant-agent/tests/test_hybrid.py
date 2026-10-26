@@ -138,9 +138,10 @@ class HybridTests(unittest.TestCase):
             if type_id in self.hybrid.SAFE_TYPE_IDS and type_id not in {24, 25, 26, 27, 28}:  # plain integer/float types have no block traits worth comparing
                 with self.subTest(type_id):
                     self.assertEqual(tuple(layout), self.ggml.layout(type_id))
-        for type_id in (4, 5, 31, 36, 43, 44, 99, -1):
+        for type_id in (4, 5, 31, 36, 44, 99, -1):
             with self.subTest(unknown=type_id), self.assertRaises(self.hybrid.HybridError):  # must never reach ggml, which aborts the whole process
                 self.ggml.layout(type_id)
+        self.assertEqual(self.ggml.layout(43), (32, 33))  # MXFP8 of the modified runtime: laid out and decoded here, not by ggml
 
     def test_equal_types_pass_through_byte_for_byte_and_corrupt_rows_are_refused(self):
         raw = self.ggml.convert(self.table[:4].tobytes(), 0, Q3_K, self.cols)
