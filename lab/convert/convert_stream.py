@@ -210,6 +210,11 @@ def main() -> int:
     os.environ['LLAMA_DIR'] = str(args.llama)
     if args.mode == 'parity':
         os.environ.pop('HF_TOKEN', None)  # public models only; no credential is needed or sent
+    else:
+        token = os.environ.get('HF_TOKEN', '').strip()  # a secret often carries a trailing newline, which is an illegal header value
+        if not token or not token.isascii() or any(ch.isspace() for ch in token):
+            raise RuntimeError('HF_TOKEN must be one ASCII token; value suppressed')
+        os.environ['HF_TOKEN'] = token
     report = {'mode': args.mode, 'model': args.model, 'outtype': args.outtype, 'split_max_size': args.split_max_size}
 
     if args.mode == 'release':

@@ -1,1 +1,1 @@
-{"mode": "release", "model": "zzzekryo/Oprius-3.1-1.1B", "outtype": "bf16", "split_max_size": "1G", "target_repo": "webmp3/Oprius-3.1-1.1B-BF16-GGUF", "attempt": 2}
+{"mode": "release", "model": "zzzekryo/Oprius-3.1-1.1B", "outtype": "bf16", "split_max_size": "1G", "target_repo": "webmp3/Oprius-3.1-1.1B-BF16-GGUF", "attempt": 3}
