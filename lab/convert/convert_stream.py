@@ -177,7 +177,10 @@ def main() -> int:
         differing = sorted(name for name in set(ours) | set(theirs) if ours.get(name) != theirs.get(name))
         report['parity'] = {'tensors_ours': len(ours), 'tensors_reference': len(theirs), 'identical': len(set(ours) & set(theirs)) - len([n for n in differing if n in ours and n in theirs]),
                             'differing': differing[:40], 'only_ours': sorted(set(ours) - set(theirs))[:20], 'only_reference': sorted(set(theirs) - set(ours))[:20],
-                            'all_identical': not differing}
+                            'all_identical': not differing,
+                            'identical_names': sorted(n for n in ours if n in theirs and ours[n] == theirs[n])[:12],
+                            'detail': [{'name': n, 'ours': ours.get(n), 'reference': theirs.get(n)} for n in differing[:6]],
+                            'what_differs': {kind: len([n for n in differing if n in ours and n in theirs and ours[n][kind] != theirs[n][kind]]) for kind in ('shape', 'type', 'sha256')}}
     print('REPORT ' + json.dumps(report))
     (args.work / 'report.json').write_text(json.dumps(report, indent=1))
     return 0
