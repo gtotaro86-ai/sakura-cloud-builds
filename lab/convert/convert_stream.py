@@ -148,6 +148,53 @@ def merged_table(paths: list[Path]) -> dict:
     return table
 
 
+ALLOWED_LICENSES = {'apache-2.0', 'mit', 'bsd-3-clause', 'bsd-2-clause', 'cc-by-4.0'}
+
+
+def write_card(args, report: dict, shards: Shards) -> None:
+    """A plain model card: where it comes from, what was done, what was and was not checked. Written only after every shard is on the Hub."""
+    from huggingface_hub import HfApi
+    api = HfApi(token=os.environ['HF_TOKEN'])
+    source = api.model_info(args.model)
+    license_id = ((source.card_data or {}).get('license') if source.card_data else None) or ''
+    rows = '
+'.join(f"| {item['name']} | {item['size']} | `{item['sha256']}` |" for item in shards.items)
+    text = f"""---
+license: {license_id}
+base_model: {args.model}
+base_model_relation: quantized
+tags:
+- gguf
+---
+
+# {args.model.split('/')[1]} as GGUF ({args.outtype.upper()})
+
+Independent community conversion. Not an official release of the upstream author: [{args.model}](https://huggingface.co/{args.model}) (license: `{license_id}`).
+
+The weights were converted from the original safetensors to GGUF **{args.outtype.upper()} without any quantization** by the unmodified official `convert_hf_to_gguf.py` of llama.cpp
+(revision `{os.environ.get('LLAMA_REVISION', 'unknown')}`), reading the safetensors remotely and splitting the output into the shards below.
+The same pipeline produced byte-identical tensors to an independent third-party F16 GGUF of Qwen2.5-0.5B-Instruct (290 of 290 tensors) and to a local run of the same converter.
+**No inference test and no quality measurement was done for this model.**
+
+| File | Bytes | SHA-256 |
+|---|---:|---|
+{rows}
+
+Keep all numbered files together and load the first one (`{shards.items[0]['name']}`) with a llama.cpp build that supports this architecture.
+
+<details>
+<summary>中文说明（点击展开）</summary>
+
+独立的社区转换版本，并非上游作者的官方发布：[{args.model}](https://huggingface.co/{args.model})（许可证：`{license_id}`）。权重由官方未修改的 llama.cpp `convert_hf_to_gguf.py` 从原始 safetensors 转换为 GGUF {args.outtype.upper()}，**未做任何量化**。**未对该模型做推理测试或质量评估。**请将所有编号文件放在一起，加载第一个文件。
+
+</details>
+"""
+    if license_id not in ALLOWED_LICENSES:
+        raise RuntimeError(f'license {license_id!r} is not on the list this lab may republish')
+    api.upload_file(path_or_fileobj=text.encode('utf-8'), path_in_repo='README.md', repo_id=args.target_repo, repo_type='model', commit_message='Add model card')
+    report['card'] = True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['parity', 'release'], required=True)
@@ -169,6 +216,9 @@ def main() -> int:
     if args.mode == 'release':
         from huggingface_hub import HfApi
         api = HfApi(token=os.environ['HF_TOKEN'])
+        source_license = ((api.model_info(args.model).card_data or {}).get('license') if api.model_info(args.model).card_data else None) or ''
+        if source_license not in ALLOWED_LICENSES:
+            raise RuntimeError(f'license {source_license!r} is not on the list this lab may republish')
         api.create_repo(args.target_repo, repo_type='model', private=args.private, exist_ok=True)
 
         def upload(path: Path, item: dict):
@@ -183,6 +233,8 @@ def main() -> int:
     report['shards'] = shards.items
     report['total_bytes'] = sum(item['size'] for item in shards.items)
 
+    if args.mode == 'release':
+        write_card(args, report, shards)
     if args.mode == 'release':
         from huggingface_hub import HfApi
         info = HfApi(token=os.environ['HF_TOKEN']).model_info(args.target_repo, files_metadata=True)

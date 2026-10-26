@@ -18,6 +18,7 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       OMP_NUM_THREADS: '4'
+      LLAMA_REVISION: 620d2225cc436ab0b001e3200e590e3b286ef9ab
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
