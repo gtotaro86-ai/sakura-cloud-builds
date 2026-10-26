@@ -1,0 +1,61 @@
+name: HFQA convert lab
+run-name: HFQA convert lab ${{ github.sha }}
+'on':
+  push:
+    branches: [lab/convert-bf16]
+    paths: [lab/convert/request.json]
+permissions:
+  contents: read
+concurrency:
+  group: hfqa-convert-lab
+  cancel-in-progress: false
+jobs:
+  convert:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      OMP_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 620d2225cc436ab0b001e3200e590e3b286ef9ab
+          path: llama
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install the official converter's requirements (CPU only)
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/lab-env"
+          "$RUNNER_TEMP/lab-env/bin/pip" install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/lab-env/bin/pip" install --quiet numpy sentencepiece transformers protobuf safetensors requests huggingface_hub hf-xet
+          df -h / /mnt | cat
+      - name: Convert
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          R=lab/convert/request.json
+          MODE=$(jq -r '.mode' "$R"); MODEL=$(jq -r '.model' "$R"); OUTTYPE=$(jq -r '.outtype // "bf16"' "$R"); SPLIT=$(jq -r '.split_max_size // "4G"' "$R")
+          TARGET=$(jq -r '.target_repo // "-"' "$R"); REF_REPO=$(jq -r '.reference_repo // "-"' "$R"); REF_FILE=$(jq -r '.reference_file // "-"' "$R")
+          mkdir -p "$RUNNER_TEMP/lab-work"
+          ARGS=(--mode "$MODE" --llama "$GITHUB_WORKSPACE/llama" --model "$MODEL" --outtype "$OUTTYPE" --split-max-size "$SPLIT" --work "$RUNNER_TEMP/lab-work")
+          if [ "$MODE" = release ]; then ARGS+=(--target-repo "$TARGET"); else ARGS+=(--reference-repo "$REF_REPO" --reference-file "$REF_FILE"); fi
+          "$RUNNER_TEMP/lab-env/bin/python" lab/convert/convert_stream.py "${ARGS[@]}"
+          df -h / /mnt | cat
+      - name: Keep the small report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: convert-lab-report-${{ github.run_id }}
+          path: ${{ runner.temp }}/lab-work/report.json
+          if-no-files-found: ignore
+          retention-days: 14

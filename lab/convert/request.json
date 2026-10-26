@@ -1,0 +1,1 @@
+{"mode": "parity", "model": "Qwen/Qwen2.5-0.5B-Instruct", "outtype": "f16", "split_max_size": "300M", "reference_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "reference_file": "qwen2.5-0.5b-instruct-fp16.gguf"}
