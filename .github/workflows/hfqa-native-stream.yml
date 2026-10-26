@@ -12,7 +12,7 @@ run-name: HFQA stream ${{ inputs.job_id || 'qualification' }}
         default: qualification
       mode:
         type: choice
-        options: [proof, stage, release]
+        options: [proof, stage, release, qualify]
         default: proof
       manifest_json:
         description: Immutable source manifest JSON; empty uses the fixed small qualification fixture
@@ -49,14 +49,6 @@ jobs:
           set -euo pipefail
           python -m venv "$RUNNER_TEMP/hfqa-env"
           "$RUNNER_TEMP/hfqa-env/bin/pip" install numpy==2.2.6 huggingface_hub==2.3.0 hf-xet==1.7.0
-          python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" > "$RUNNER_TEMP/hfqa-runtime-path"
-          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
-          python scripts/build_stream_bridge.py --runtime "$runtime_dir" --destination "$RUNNER_TEMP/hfqa-bridge"
-      - name: Validate metadata and tests without repository code execution
-        working-directory: hf-quant-agent
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/hfqa-env/bin/python" -m unittest discover -s tests -q
           python - <<'PY'
           import json, os, pathlib
           root=pathlib.Path(os.environ['RUNNER_TEMP'])
@@ -65,6 +57,14 @@ jobs:
           data=json.loads(raw) if raw.strip() else json.loads(pathlib.Path('github/requests/stream-smoke.json').read_text(encoding='utf-8-sig'))
           (root/'hfqa-request.json').write_text(json.dumps(data),encoding='utf-8')
           PY
+          python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" --manifest "$RUNNER_TEMP/hfqa-request.json" > "$RUNNER_TEMP/hfqa-runtime-path"
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          python scripts/build_stream_bridge.py --runtime "$runtime_dir" --destination "$RUNNER_TEMP/hfqa-bridge" --manifest "$RUNNER_TEMP/hfqa-request.json"
+      - name: Validate metadata and tests without repository code execution
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/hfqa-env/bin/python" -m unittest discover -s tests -q
       - name: Stream bounded native rows and verify source digests
         working-directory: hf-quant-agent
         run: |
@@ -142,13 +142,13 @@ jobs:
           set -euo pipefail
           python -m venv "$RUNNER_TEMP/hfqa-env"
           "$RUNNER_TEMP/hfqa-env/bin/pip" install numpy==2.2.6 huggingface_hub==2.3.0 hf-xet==1.7.0
-          python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" > "$RUNNER_TEMP/hfqa-runtime-path"
-          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
-          python scripts/build_stream_bridge.py --runtime "$runtime_dir" --destination "$RUNNER_TEMP/hfqa-bridge"
           python - <<'PY'
           import os, pathlib
           pathlib.Path(os.environ['RUNNER_TEMP'], 'hfqa-request.json').write_text(os.environ['HFQA_MANIFEST_JSON'], encoding='utf-8')
           PY
+          python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" --manifest "$RUNNER_TEMP/hfqa-request.json" > "$RUNNER_TEMP/hfqa-runtime-path"
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          python scripts/build_stream_bridge.py --runtime "$runtime_dir" --destination "$RUNNER_TEMP/hfqa-bridge" --manifest "$RUNNER_TEMP/hfqa-request.json"
       - name: Quantize, verify, run a real inference, then stage on a branch (never main)
         working-directory: hf-quant-agent
         run: |

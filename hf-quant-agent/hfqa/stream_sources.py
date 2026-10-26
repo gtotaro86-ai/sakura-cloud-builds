@@ -37,8 +37,12 @@ def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str
         if [f['split_index'] for f in files]!=list(range(1,expected+1)):continue
         valid.append((name,files))
     if not valid:raise ValueError('no complete verified Q8_0/F16/BF16 GGUF source set found')
-    valid.sort(key=lambda item:('q8_0' not in item[0].lower(),sum(f['size'] for f in item[1]),item[0]))
+    # Own quants should come from the highest precision available: BF16, then F16, then (already quantized) Q8_0.
+    def precision(name):
+        lowered=name.lower()
+        return 0 if 'bf16' in lowered else 1 if re.search(r'(?:^|[-_.])f16(?:[-_.]|$)',lowered) else 2
+    valid.sort(key=lambda item:(precision(item[0]),sum(f['size'] for f in item[1]),item[0]))
     name,files=valid[0]
     return {'repo_id':repo,'revision':revision.lower(),'sources':files,'total_source_bytes':sum(f['size'] for f in files),
-            'source_set':name,'weights_downloaded_on_oracle':False,
+            'source_set':name,'source_precision':('bf16','f16','q8_0')[precision(name)],'weights_downloaded_on_oracle':False,
             'license_decision':native.get('license_decision') or analysis.get('license_decision')}

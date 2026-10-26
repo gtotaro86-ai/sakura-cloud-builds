@@ -13,7 +13,9 @@ from scripts.build_stream_bridge import REVISION
 
 def run(manifest_path,runtime,bridge,work,mode='proof'):
     manifest,source=read_manifest(manifest_path)
-    if manifest['runtime_revision']!=REVISION:raise ValueError('manifest does not match the fixed stock runtime build')
+    from hfqa import runtimes
+    pinned=runtimes.descriptor_for_manifest(manifest)  # raises unless the manifest names a fully pinned official build
+    if pinned['revision']!=manifest['runtime_revision']:raise ValueError('manifest does not match the pinned stock runtime build')
     work=Path(work);work.mkdir(parents=True,exist_ok=True)
     runtime=Path(runtime);bridge=Path(bridge)
     ggml=runtime/'libggml-base.so'
@@ -33,6 +35,14 @@ def run(manifest_path,runtime,bridge,work,mode='proof'):
         # A real source stream is exercised for every quant; only small fixture
         # outputs are materialized so the stock runtime can load actual bytes.
         reports=[]
+        qualify=mode=='qualify'
+        if qualify:
+            if len(manifest.get('sources') or [manifest['source']])!=1:raise ValueError('qualification uses the single-file fixture')
+            from huggingface_hub import hf_hub_download
+            from hfqa import runtime_parity
+            fixture=source if 'filename' in source else manifest['source']
+            local_source=Path(hf_hub_download(fixture['repo_id'],fixture['filename'],revision=fixture['revision'],local_dir=work/'fixture'))
+            if sha256_file(local_source)!=fixture['sha256']:raise ValueError('fixture source SHA-256 mismatch')
         for quant in manifest['quants']:
             folder=work/quant;folder.mkdir(exist_ok=False)
             chosen={**manifest,'quants':[quant]}
@@ -55,9 +65,28 @@ def run(manifest_path,runtime,bridge,work,mode='proof'):
                         'runtime_compatible':True,'inference_tested':True,'inference':inference,'published':False,
                         'source_materialized':False,'output_files_materialized_for_small_fixture_only':True,
                         'receipt':output['receipt']}
+            if qualify:
+                stock_out=folder/'stock'/(quant+'.gguf');stock_out.parent.mkdir()
+                runtime_parity.stock_quantize(runtime/'llama-quantize',local_source,stock_out,quant,folder/'stock-quantize.log')
+                validation['parity']=runtime_parity.compare(runtime_parity.merged_catalogue([Path(item['path']) for item in files]),
+                                                            runtime_parity.tensor_catalogue(stock_out))
+                stock_out.unlink()
+                if not validation['parity']['parity']:raise ValueError(f"stock parity failed for {quant}: {validation['parity']['different'][:3]}")
             (folder/'validation.json').write_text(json.dumps(validation,indent=2),encoding='utf-8')
             reports.append(validation)
         result={'worker_state':'QUALIFIED_SMALL_STREAM_PROOF','source_materialized':False,'published':False,'validations':reports}
+        if qualify:
+            import hashlib
+            from hfqa import runtime_qualification
+            bridge_receipt=json.loads((bridge.parent/'build-receipt.json').read_text(encoding='utf-8'))
+            digest=lambda path:hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            qualification=runtime_qualification.build_receipt(
+                manifest=manifest,descriptor=pinned,env=os.environ,bridge_receipt=bridge_receipt,
+                binaries={'llama_cli_sha256':digest(runtime/'llama-cli'),'llama_quantize_sha256':digest(runtime/'llama-quantize'),
+                          'libllama_sha256':digest(runtime/'libllama.so'),'libggml_base_sha256':digest(ggml)},
+                results=[{'quant':item['quant'],'parity':item['parity'],'shard_count':item['shard_count'],
+                          'inference':{k:item['inference'].get(k) for k in ('returncode','completion','runtime_build','runtime_sha256','prompt')}} for item in reports])
+            (work/'runtime-qualification.json').write_text(json.dumps(qualification,indent=2),encoding='utf-8')
     (work/'worker-result.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
     print(json.dumps({'worker_state':result['worker_state'],'published':False,'source_materialized':False}))
     return result
@@ -65,5 +94,5 @@ def run(manifest_path,runtime,bridge,work,mode='proof'):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--manifest',required=True);p.add_argument('--runtime',required=True);p.add_argument('--bridge',required=True)
-    p.add_argument('--work',required=True);p.add_argument('--mode',choices=['proof','stage'],default='proof')
+    p.add_argument('--work',required=True);p.add_argument('--mode',choices=['proof','stage','qualify'],default='proof')
     a=p.parse_args();run(a.manifest,a.runtime,a.bridge,a.work,a.mode)

@@ -1,23 +1,36 @@
-"""Fetch and hash-check a fixed CPU runtime for a free public GitHub runner."""
-from pathlib import Path
-import argparse, hashlib, tarfile, urllib.request
-URL='https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-x64.tar.gz'
-DIGEST='cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac'
+"""Fetch and hash-check a fixed CPU runtime for a free public GitHub runner.
 
-def fetch(destination):
+Without a manifest the baseline build is used. With a manifest the runtime named in it is used, but only an official
+llama.cpp release asset with the exact SHA-256 that Oracle pinned (see hfqa/runtimes.py).
+"""
+from pathlib import Path
+import argparse, hashlib, json, sys, tarfile, urllib.request
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from hfqa import runtimes
+URL = runtimes.asset_url(runtimes.BASELINE_TAG)
+DIGEST = runtimes.BASELINE_SHA256
+
+def fetch(destination, descriptor=None):
+    descriptor = descriptor or runtimes.baseline()
     destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
     archive=destination/'runtime.tar.gz';sha=hashlib.sha256();count=0
-    with urllib.request.urlopen(URL,timeout=60) as response,archive.open('wb') as handle:
+    with urllib.request.urlopen(descriptor['url'],timeout=60) as response,archive.open('wb') as handle:
         while chunk:=response.read(1024**2):
             count+=len(chunk)
-            if count>32*1024**2:raise ValueError('runtime asset exceeds fixed download budget')
+            if count>runtimes.MAX_ASSET_BYTES:raise ValueError('runtime asset exceeds fixed download budget')
             sha.update(chunk);handle.write(chunk)
-    if sha.hexdigest()!=DIGEST:raise ValueError('stock runtime asset SHA-256 mismatch')
+    if sha.hexdigest()!=descriptor['sha256']:raise ValueError('stock runtime asset SHA-256 mismatch')
     with tarfile.open(archive) as bundle:bundle.extractall(destination,filter='data')
     found=list(destination.rglob('libllama.so'))
     if len(found)!=1:raise ValueError('ambiguous stock runtime layout')
     print(found[0].parent.resolve())
     return found[0].parent
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--destination',required=True)
-    fetch(p.parse_args().destination)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--destination',required=True);p.add_argument('--manifest')
+    a=p.parse_args()
+    chosen=None
+    if a.manifest:
+        raw=Path(a.manifest)
+        if raw.stat().st_size>1024**2:raise ValueError('manifest exceeds metadata budget')
+        chosen=runtimes.descriptor_for_manifest(json.loads(raw.read_text(encoding='utf-8-sig')))
+    fetch(a.destination,chosen)

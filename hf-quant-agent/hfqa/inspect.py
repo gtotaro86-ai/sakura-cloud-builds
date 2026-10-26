@@ -50,7 +50,75 @@ def find_native_gguf_repo(repo_id: str, timeout: float = 20) -> dict | None:
             "license_decision": classify_license((info.get("cardData") or {}).get("license") or _tag_license(info.get("tags") or []), info.get("cardData") or {}),
             "weights_downloaded": False,
         }
-    return None
+    try:
+        return find_third_party_gguf_repo(repo_id, timeout)
+    except InspectError:
+        return None
+
+
+# Only established quantizers are trusted to have converted the ORIGINAL weights unchanged. A repository of anyone else,
+# or one whose name signals changed weights, is never picked automatically: it could pass off a modified model as the original.
+TRUSTED_QUANTIZERS = frozenset(x.lower() for x in (
+    "bartowski", "unsloth", "lmstudio-community", "mradermacher", "QuantFactory", "ggml-org", "second-state", "TheBloke", "MaziyarPanahi"))
+MODIFIED_WEIGHTS_HINT = re.compile(r"abliterat|uncensor|heretic|merge|merged|finetune|fine-tune|lora|dpo|sft|rp[-_]|roleplay|distill", re.I)
+
+
+def find_third_party_gguf_repo(repo_id: str, timeout: float = 20, limit: int = 8) -> dict | None:
+    """A GGUF repository of ANOTHER author that Hugging Face lists as a quantization of this model.
+
+    Used only as the INPUT of our own quantization (never copied). The best candidate has a complete, hash-pinned
+    BF16 set, else F16, else Q8_0; ties go to the more downloaded repository. Metadata only, no weights.
+    """
+    from hfqa.stream_sources import select_stream_sources
+    query = ("https://huggingface.co/api/models?filter=gguf&filter=" + urllib.parse.quote("base_model:quantized:" + repo_id, safe="")
+             + f"&sort=downloads&direction=-1&limit={limit}")
+    ranks = {"bf16": 0, "f16": 1, "q8_0": 2}
+    best = None
+    for position, item in enumerate(_json(query, timeout) or []):
+        candidate = item.get("id") or item.get("modelId")
+        if not candidate or candidate == repo_id:
+            continue
+        owner = candidate.split("/", 1)[0].lower()
+        if owner not in TRUSTED_QUANTIZERS or MODIFIED_WEIGHTS_HINT.search(candidate.split("/", 1)[-1]):
+            continue
+        try:
+            info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(candidate)}", timeout)
+            revision = info.get("sha")
+            selected = select_stream_sources({"repo_id": candidate, "revision": revision}, timeout)
+        except (InspectError, ValueError):
+            continue
+        card = info.get("cardData") or {}
+        if str(card.get("base_model_relation") or "quantized").lower() != "quantized" or MODIFIED_WEIGHTS_HINT.search(" ".join(info.get("tags") or [])):
+            continue
+        licence = card.get("license") or _tag_license(info.get("tags") or [])
+        rank = ranks.get(selected.get("source_precision"), 3)
+        if best is None or rank < best[0]:
+            best = (rank, position, {
+                "repo_id": info.get("id") or candidate, "revision": revision, "architecture": (info.get("gguf") or {}).get("architecture"),
+                "gguf_files": [s["filename"] for s in selected["sources"]][:40], "license": licence,
+                "license_decision": classify_license(licence, card), "weights_downloaded": False,
+                "third_party": True, "source_set": selected["source_set"], "source_precision": selected["source_precision"],
+                "source_bytes": selected["total_source_bytes"], "downloads": item.get("downloads"),
+            })
+        if rank == 0:
+            break
+    return best[2] if best else None
+
+
+def list_gguf_candidates(repo_id: str, timeout: float = 20, limit: int = 8) -> list[dict]:
+    """GGUF repositories Hugging Face lists as quantizations of this model; shown to the user, never used automatically."""
+    query = ("https://huggingface.co/api/models?filter=gguf&filter=" + urllib.parse.quote("base_model:quantized:" + repo_id, safe="")
+             + f"&sort=downloads&direction=-1&limit={limit}")
+    try:
+        items = _json(query, timeout) or []
+    except InspectError:
+        return []
+    found = []
+    for item in items:
+        name = item.get("id") or item.get("modelId")
+        if name and name != repo_id:
+            found.append({"repo_id": name, "downloads": item.get("downloads"), "trusted": name.split("/", 1)[0].lower() in TRUSTED_QUANTIZERS})
+    return found
 
 
 def parse_hf_url(value: str) -> tuple[str, str | None]:
@@ -176,6 +244,8 @@ def inspect_repo(source: str, timeout: float = 30) -> dict:
         "parameters": parameters,
         "used_storage": info.get("usedStorage"),
         "license": license_id,
+        "license_name": card.get("license_name"),
+        "license_link": card.get("license_link"),
         "license_decision": license_decision,
         "custom_code": "custom_code" in (info.get("tags") or []) or bool((config or {}).get("auto_map")),
         "trust_remote_code_executed": False,
@@ -309,6 +379,13 @@ def detect_formats(files: list[str], config: dict | None, gguf: dict) -> list[st
 def classify_license(license_id: str | None, card: dict) -> dict:
     normalized = (license_id or "").strip().lower()
     blob = json.dumps(card, ensure_ascii=False).lower()
+    # A vendor license published as `other` can be approved by the operator once, by its license name.
+    if normalized == "other" and (card or {}).get("license_name"):
+        from hfqa.license_approvals import is_approved
+        approved = is_approved(card.get("license_name"))
+        if approved:
+            return {"redistributable": True, "reason": f"approved by the operator: {approved['license_name']} ({approved['license_link']})",
+                    "operator_approved": True, "license_name": approved["license_name"], "license_link": approved["license_link"]}
     restricted = any(hint in blob or hint in normalized for hint in RESTRICTED_HINTS)
     if not normalized:
         return {"redistributable": False, "reason": "license not declared; publication blocked"}

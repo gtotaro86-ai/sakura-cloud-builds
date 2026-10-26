@@ -61,12 +61,16 @@ class StreamSourceSelectionTests(unittest.TestCase):
         self.assertEqual(item["sha256"], "b" * 64)
         self.assertEqual((item["split_index"], item["split_count"]), (1, 1))
 
-    def test_q8_is_preferred_then_smallest_complete_set(self):
+    def test_highest_precision_wins_then_the_smallest_complete_set(self):
         items = [shard(1, 1, stem="model-F16", size=100),
                  shard(1, 1, stem="large-Q8_0", size=1000),
                  shard(1, 1, stem="small-Q8_0", size=500)]
+        self.assertEqual(self.select(items)["sources"][0]["filename"], "model-F16-00001-of-00001.gguf")
+        items.append(shard(1, 1, stem="model-BF16", size=900))
         result = self.select(items)
-        self.assertEqual(result["sources"][0]["filename"], "small-Q8_0-00001-of-00001.gguf")
+        self.assertEqual((result["sources"][0]["filename"], result["source_precision"]), ("model-BF16-00001-of-00001.gguf", "bf16"))
+        only_q8 = self.select(items[1:3])
+        self.assertEqual((only_q8["sources"][0]["filename"], only_q8["source_precision"]), ("small-Q8_0-00001-of-00001.gguf", "q8_0"))
 
     def test_incomplete_q8_does_not_hide_complete_f16(self):
         result = self.select([shard(1), shard(1, 1, stem="model-F16")])
