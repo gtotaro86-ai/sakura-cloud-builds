@@ -16,7 +16,7 @@ import struct
 from pathlib import Path
 from types import SimpleNamespace
 
-QUANTS = {'Q2_K': 10, 'Q3_K_M': 12, 'Q4_K_M': 15, 'Q5_K_M': 17}
+from hfqa.quants import FTYPE as QUANTS  # core presets plus the extra stock presets (see hfqa/quants.py)
 # GGML type -> (block elements, block bytes)
 LAYOUTS = {0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20),
            6: (32, 22), 7: (32, 24), 8: (32, 34), 9: (32, 40),

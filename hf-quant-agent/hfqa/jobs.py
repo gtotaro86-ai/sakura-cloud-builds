@@ -338,8 +338,10 @@ class JobStore:
         allowed = {
             "repo_id", "revision", "analysis_json", "plan_json", "result_json",
             "error", "dedupe_key", "quants",
-            "retry_json",
+            "retry_json", "execution_backend",
         }
+        if fields.get("execution_backend", "auto") not in {"auto", "oracle", "github"}:
+            raise ValueError("unknown execution backend")
         sets: list[str] = []
         vals: list[object] = []
         for key, value in fields.items():

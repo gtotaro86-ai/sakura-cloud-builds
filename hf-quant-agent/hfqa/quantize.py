@@ -12,7 +12,9 @@ from pathlib import Path
 from hfqa.gguf import validate_gguf
 from hfqa.imatrix import validate_imatrix
 
-ALLOWED_QUANTS = {"Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M"}
+from hfqa.quants import ALL as _ALL_QUANTS
+
+ALLOWED_QUANTS = set(_ALL_QUANTS)
 
 
 def _require_same_tensors(source: dict, output: dict) -> None:

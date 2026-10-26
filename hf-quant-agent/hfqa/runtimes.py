@@ -79,6 +79,8 @@ def approved() -> list[dict]:
     entries = [{**baseline(), 'gguf_architectures': list(llama_arch.stock()['gguf_architectures']), 'baseline': True}]
     extra = []
     for item in _overlay().values():
+        if item.get('revision') == BASELINE_REVISION:
+            continue  # extra presets proven on the baseline are recorded in the overlay but do not make it a second runtime
         try:
             extra.append({**validate_descriptor(item), 'gguf_architectures': [str(a) for a in item.get('gguf_architectures') or []],
                           'approved_at': item.get('approved_at'), 'qualification': item.get('qualification')})
@@ -89,6 +91,14 @@ def approved() -> list[dict]:
 
 def is_approved(revision) -> bool:
     return isinstance(revision, str) and any(item['revision'] == revision for item in approved())
+
+
+def qualified_quants(revision: str) -> set:
+    """Presets this build has proven (tensor-for-tensor parity with its own llama-quantize plus a real inference)."""
+    from hfqa import quants
+    found = set(quants.CORE) if revision == BASELINE_REVISION else set()
+    entry = _overlay().get(revision) or {}
+    return found | set((entry.get('qualification') or {}).get('quants') or [])
 
 
 def for_architecture(architecture: str | None) -> dict | None:
@@ -106,6 +116,8 @@ def approve(descriptor: dict, gguf_architectures: list[str], qualification: dict
     if not gguf_architectures:
         raise ValueError('a runtime needs its architecture list before approval')
     overlay = _overlay()
+    old = set(((overlay.get(descriptor['revision']) or {}).get('qualification') or {}).get('quants') or [])
+    qualification = {**qualification, 'quants': sorted(old | set(qualification.get('quants') or []))}
     overlay[descriptor['revision']] = {**descriptor, 'gguf_architectures': sorted(set(gguf_architectures)),
                                        'approved_at': datetime.now(timezone.utc).isoformat(), 'qualification': qualification}
     path = _path()

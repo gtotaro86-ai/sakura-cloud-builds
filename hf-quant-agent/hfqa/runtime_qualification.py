@@ -59,7 +59,8 @@ def _validate(receipt, manifest, descriptor, run_id, repository, worker_revision
     _need(all(HEX64.fullmatch(str(binaries.get(key, ''))) for key in ('llama_cli_sha256', 'llama_quantize_sha256', 'libllama_sha256', 'libggml_base_sha256')),
           'binary identities are incomplete')
     results = receipt.get('results')
-    _need(isinstance(results, list) and sorted(str(item.get('quant')) for item in results) == sorted(REQUIRED_QUANTS), 'quant set is incomplete')
+    wanted = list(manifest.get('quants') or [])
+    _need(isinstance(results, list) and set(REQUIRED_QUANTS) <= set(wanted) and sorted(str(item.get('quant')) for item in results) == sorted(wanted), 'quant set is incomplete')
     for item in results:
         parity = item.get('parity') or {}
         _need(parity.get('parity') is True and parity.get('different_count') == 0 and parity.get('only_streamed') == [] and parity.get('only_stock') == []
@@ -67,5 +68,5 @@ def _validate(receipt, manifest, descriptor, run_id, repository, worker_revision
         inference = item.get('inference') or {}
         _need(inference.get('returncode') == 0 and 'paris' in str(inference.get('completion', '')).lower()
               and descriptor['revision'][:9] in str(inference.get('runtime_build')), f"inference proof failed for {item.get('quant')}")
-    return {'quants': sorted(REQUIRED_QUANTS), 'bridge_sha256': bridge['bridge_sha256'], 'binaries': binaries,
+    return {'quants': sorted(wanted), 'bridge_sha256': bridge['bridge_sha256'], 'binaries': binaries,
             'tensor_counts': {item['quant']: item['parity']['tensor_count'] for item in results}}
