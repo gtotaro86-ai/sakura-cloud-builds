@@ -157,8 +157,7 @@ def write_card(args, report: dict, shards: Shards) -> None:
     api = HfApi(token=os.environ['HF_TOKEN'])
     source = api.model_info(args.model)
     license_id = ((source.card_data or {}).get('license') if source.card_data else None) or ''
-    rows = '
-'.join(f"| {item['name']} | {item['size']} | `{item['sha256']}` |" for item in shards.items)
+    rows = chr(10).join(f"| {item['name']} | {item['size']} | `{item['sha256']}` |" for item in shards.items)
     text = f"""---
 license: {license_id}
 base_model: {args.model}
