@@ -45,10 +45,10 @@ jobs:
           set -euo pipefail
           R=lab/convert/request.json
           MODE=$(jq -r '.mode' "$R"); MODEL=$(jq -r '.model' "$R"); OUTTYPE=$(jq -r '.outtype // "bf16"' "$R"); SPLIT=$(jq -r '.split_max_size // "4G"' "$R")
-          TARGET=$(jq -r '.target_repo // "-"' "$R"); REF_REPO=$(jq -r '.reference_repo // "-"' "$R"); REF_FILE=$(jq -r '.reference_file // "-"' "$R")
+          TARGET=$(jq -r '.target_repo // "-"' "$R"); REFS=$(jq -c '.references // []' "$R"); LOCAL=$(jq -r '.local_check // false' "$R")
           mkdir -p "$RUNNER_TEMP/lab-work"
           ARGS=(--mode "$MODE" --llama "$GITHUB_WORKSPACE/llama" --model "$MODEL" --outtype "$OUTTYPE" --split-max-size "$SPLIT" --work "$RUNNER_TEMP/lab-work")
-          if [ "$MODE" = release ]; then ARGS+=(--target-repo "$TARGET"); else ARGS+=(--reference-repo "$REF_REPO" --reference-file "$REF_FILE"); fi
+          if [ "$MODE" = release ]; then ARGS+=(--target-repo "$TARGET"); else ARGS+=(--references "$REFS"); if [ "$LOCAL" = true ]; then ARGS+=(--local-check); fi; fi
           "$RUNNER_TEMP/lab-env/bin/python" lab/convert/convert_stream.py "${ARGS[@]}"
           df -h / /mnt | cat
       - name: Keep the small report

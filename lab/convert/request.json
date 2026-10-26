@@ -1,1 +1,1 @@
-{"mode": "parity", "model": "Qwen/Qwen2.5-0.5B-Instruct", "outtype": "f16", "split_max_size": "300M", "reference_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "reference_file": "qwen2.5-0.5b-instruct-fp16.gguf", "attempt": 4}
+{"mode": "parity", "model": "Qwen/Qwen2.5-0.5B-Instruct", "outtype": "f16", "split_max_size": "300M", "local_check": true, "references": [{"repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "file": "qwen2.5-0.5b-instruct-fp16.gguf"}, {"repo": "bartowski/Qwen2.5-0.5B-Instruct-GGUF", "file": "Qwen2.5-0.5B-Instruct-f16.gguf"}], "attempt": 5}

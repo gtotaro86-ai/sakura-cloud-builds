@@ -156,8 +156,8 @@ def main() -> int:
     parser.add_argument('--outtype', default='bf16')
     parser.add_argument('--split-max-size', default='4G')
     parser.add_argument('--work', type=Path, required=True)
-    parser.add_argument('--reference-repo')
-    parser.add_argument('--reference-file')
+    parser.add_argument('--references', default='[]', help='JSON list of {repo, file}')
+    parser.add_argument('--local-check', action='store_true')
     parser.add_argument('--target-repo')
     parser.add_argument('--private', action='store_true')
     args = parser.parse_args()
@@ -192,18 +192,28 @@ def main() -> int:
         report['read_back_mismatch'] = bad
     else:
         from huggingface_hub import hf_hub_download
-        reference = Path(hf_hub_download(args.reference_repo, args.reference_file, local_dir=str(args.work / 'ref')))
-        ours = merged_table(sorted((args.work / 'out').glob('*.gguf')))
-        theirs = tensor_table(reference)
-        differing = sorted(name for name in set(ours) | set(theirs) if ours.get(name) != theirs.get(name))
-        sample = [n for n in differing if n in ours and n in theirs][:4] + [n for n in differing if 'norm' in n][:2]
-        report['numeric'] = numeric_compare(sorted((args.work / 'out').glob('*.gguf')), reference, sample)
-        report['parity'] = {'tensors_ours': len(ours), 'tensors_reference': len(theirs), 'identical': len(set(ours) & set(theirs)) - len([n for n in differing if n in ours and n in theirs]),
-                            'differing': differing[:40], 'only_ours': sorted(set(ours) - set(theirs))[:20], 'only_reference': sorted(set(theirs) - set(ours))[:20],
-                            'all_identical': not differing,
-                            'identical_names': sorted(n for n in ours if n in theirs and ours[n] == theirs[n])[:12],
-                            'detail': [{'name': n, 'ours': ours.get(n), 'reference': theirs.get(n)} for n in differing[:6]],
-                            'what_differs': {kind: len([n for n in differing if n in ours and n in theirs and ours[n][kind] != theirs[n][kind]]) for kind in ('shape', 'type', 'sha256')}}
+        ours_paths = sorted((args.work / 'out').glob('*.gguf'))
+        ours = merged_table(ours_paths)
+        report['comparisons'] = []
+        compared = {'ours (remote conversion)': ours}
+        if args.local_check:
+            import subprocess
+            from huggingface_hub import snapshot_download
+            local_model = snapshot_download(args.model, local_dir=str(args.work / 'localmodel'))
+            subprocess.run([sys.executable, str(args.llama / 'convert_hf_to_gguf.py'), local_model, '--outtype', args.outtype, '--split-max-size', args.split_max_size,
+                            '--outfile', str(args.work / 'local' / 'model.gguf')], check=True, env={**os.environ, 'PYTHONPATH': str(args.llama / 'gguf-py')})
+            compared['ours (local conversion)'] = merged_table(sorted((args.work / 'local').glob('*.gguf')))
+        for entry in json.loads(args.references):
+            reference = Path(hf_hub_download(entry['repo'], entry['file'], local_dir=str(args.work / 'ref' / entry['repo'].replace('/', '_'))))
+            compared[entry['repo']] = tensor_table(reference)
+        names = list(compared)
+        for i, left in enumerate(names):
+            for right in names[i + 1:]:
+                a, b = compared[left], compared[right]
+                differing = sorted(n for n in set(a) | set(b) if a.get(n) != b.get(n))
+                report['comparisons'].append({'left': left, 'right': right, 'tensors': [len(a), len(b)], 'identical': len(set(a) & set(b)) - len([n for n in differing if n in a and n in b]),
+                                              'only_left': sorted(set(a) - set(b))[:5], 'only_right': sorted(set(b) - set(a))[:5],
+                                              'differing_examples': differing[:5], 'all_identical': not differing})
     print('REPORT ' + json.dumps(report))
     (args.work / 'report.json').write_text(json.dumps(report, indent=1))
     return 0
