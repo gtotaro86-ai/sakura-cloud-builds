@@ -120,6 +120,27 @@ def tensor_table(path: Path) -> dict:
     return table
 
 
+def numeric_compare(ours_paths: list[Path], reference: Path, names: list[str]) -> list[dict]:
+    """How far apart are two tensors that are not byte-identical: tiny rounding differences or really different values?"""
+    import numpy as np
+    sys.path.insert(0, str(Path(os.environ['LLAMA_DIR']) / 'gguf-py'))
+    from gguf import GGUFReader
+    wanted = set(names)
+    ours = {}
+    for path in ours_paths:
+        for tensor in GGUFReader(str(path), 'r').tensors:
+            if tensor.name in wanted:
+                ours[tensor.name] = np.array(tensor.data, dtype=np.float32)
+    rows = []
+    for tensor in GGUFReader(str(reference), 'r').tensors:
+        if tensor.name in ours:
+            a, b = ours[tensor.name], np.array(tensor.data, dtype=np.float32)
+            diff = np.abs(a - b)
+            rows.append({'name': tensor.name, 'max_abs': float(diff.max()), 'mean_abs': float(diff.mean()), 'mean_abs_value': float(np.abs(b).mean()),
+                         'share_equal': float((a == b).mean()), 'ours_first': a.reshape(-1)[:4].tolist(), 'ref_first': b.reshape(-1)[:4].tolist()})
+    return rows
+
+
 def merged_table(paths: list[Path]) -> dict:
     table = {}
     for path in paths:
@@ -175,6 +196,8 @@ def main() -> int:
         ours = merged_table(sorted((args.work / 'out').glob('*.gguf')))
         theirs = tensor_table(reference)
         differing = sorted(name for name in set(ours) | set(theirs) if ours.get(name) != theirs.get(name))
+        sample = [n for n in differing if n in ours and n in theirs][:4] + [n for n in differing if 'norm' in n][:2]
+        report['numeric'] = numeric_compare(sorted((args.work / 'out').glob('*.gguf')), reference, sample)
         report['parity'] = {'tensors_ours': len(ours), 'tensors_reference': len(theirs), 'identical': len(set(ours) & set(theirs)) - len([n for n in differing if n in ours and n in theirs]),
                             'differing': differing[:40], 'only_ours': sorted(set(ours) - set(theirs))[:20], 'only_reference': sorted(set(theirs) - set(ours))[:20],
                             'all_identical': not differing,
