@@ -105,8 +105,9 @@ def for_architecture(architecture: str | None) -> dict | None:
     """The baseline when it knows the architecture, otherwise the newest approved build that does."""
     if not architecture:
         return None
+    from hfqa import llama_arch
     for item in approved():
-        if architecture in item['gguf_architectures']:
+        if llama_arch.knows(item['gguf_architectures'], architecture):
             return {key: item[key] for key in ('tag', 'revision', 'url', 'sha256')}
     return None
 

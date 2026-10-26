@@ -159,6 +159,10 @@ class JobStore:
               message TEXT,
               data_json TEXT
             );
+            CREATE TABLE IF NOT EXISTS watchdog_state (
+              key TEXT PRIMARY KEY,
+              value REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS shards (
               job_id TEXT NOT NULL,
               quant TEXT NOT NULL,
@@ -475,6 +479,39 @@ class JobStore:
             jobs.append(job)
         # An interrupted model must finish before a later timer starts another.
         return sorted(jobs, key=lambda job: (job["state"] not in EXECUTING, job["queue_position"]))
+
+    def execution_head(self) -> dict | None:
+        """The job that must run next on Oracle; every later job waits for it."""
+        with self._lock:
+            candidates = self._execution_candidates()
+            return candidates[0] if candidates else None
+
+    def execution_slot_busy(self, now: float | None = None) -> bool:
+        with self._lock:
+            return bool(self.conn.execute("SELECT 1 FROM execution_leases WHERE expires_at>?", (time.time() if now is None else now,)).fetchone())
+
+    def last_progress_on_oracle(self) -> str:
+        """Time (ISO text) of the newest STATE CHANGE of any job that is not run by GitHub; empty when there is none.
+
+        Only state changes count. Polling a GitHub run, a watchdog note or a repeated "ticket missing" event touch a job every
+        few minutes without anything moving forward, and would keep the queue looking busy forever."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT MAX(e.ts) FROM events e JOIN jobs j ON j.id=e.job_id WHERE j.execution_backend!='github' AND e.from_state IS NOT e.to_state").fetchone()
+        return str(row[0] or "")
+
+    def note_watchdog_run(self, now: float, outage_after: float = 600.0) -> float:
+        """Remember this sweep and return the time from which the system has been up without a break.
+
+        When the previous sweep is more than `outage_after` seconds old (reboot, deploy, maintenance) the idle clock starts again,
+        so a first-in-line job is never judged for the time nobody was there to start it."""
+        with self._write():
+            rows = dict(self.conn.execute("SELECT key, value FROM watchdog_state").fetchall())
+            last = rows.get("last_run")
+            baseline = now if last is None or now - last > outage_after or "baseline" not in rows else rows["baseline"]
+            for key, value in (("last_run", now), ("baseline", baseline)):
+                self.conn.execute("INSERT INTO watchdog_state(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+            return baseline
 
     def acquire_execution(self, job_id: str, owner: str, ttl_seconds: float = 3600) -> bool:
         """Claim the single Oracle heavy-work slot, across all worker processes.

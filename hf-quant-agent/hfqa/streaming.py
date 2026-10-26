@@ -24,8 +24,9 @@ LAYOUTS = {0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20),
            13: (256, 176), 14: (256, 210), 15: (256, 292), 30: (1, 2)}
 SOURCE_TYPES = {0, 1, 8, 30}
 ROW_WORK_BYTES = 8 * 1024**2
-DEFAULT_SHARD_BYTES = 4 * 1024**3
-MAX_SHARD_BYTES = 50_000_000_000
+MAX_SHARD_BYTES = 50_000_000_000  # the Hub's per-file limit
+# People want ONE file per quantization. Everything up to this size is one file; only a larger output is split (still below the Hub limit).
+DEFAULT_SHARD_BYTES = 45_000_000_000
 
 
 def _field(value, key):
@@ -502,7 +503,9 @@ class ShardedQuantizedStream:
 def shard_filename(stem, quant, index, count):
     if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]*', stem) or quant not in QUANTS or not 0 <= index < count <= 1024:
         raise ValueError('invalid streamed shard filename components')
-    return f'{stem}-{quant}-requant-{index + 1:05d}-of-{count:05d}.gguf'
+    if count == 1:
+        return f'{stem}-{quant}.gguf'  # one file, the name people expect: Model-Q4_K_M.gguf
+    return f'{stem}-{quant}-{index + 1:05d}-of-{count:05d}.gguf'
 
 
 def _xet_environment(api, repo_id, revision):

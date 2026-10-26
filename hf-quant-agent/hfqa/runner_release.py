@@ -176,7 +176,7 @@ def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, lla
     native = NativeQuantizer(bridge, ggml, manifest['runtime_revision'])
     remote = open_source(source)
     structure = source_structure(remote)
-    stem = Path(source['filename']).stem
+    stem = manifest.get('output_stem') or Path(source['filename']).stem
     stream = ShardedQuantizedStream(remote, source, quant, native, target_shard_bytes=int(manifest.get('target_shard_bytes') or DEFAULT_SHARD_BYTES))
     log(json.dumps({'event': 'plan', 'quant': quant, 'planned_bytes': stream.size, 'shards': len(stream.shards), 'runner': facts}), flush=True)
     t1 = time.monotonic()
