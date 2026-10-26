@@ -117,5 +117,38 @@ class QualificationTests(unittest.TestCase):
                 self.check(mutate)
 
 
+class RunnerLicenseTests(unittest.TestCase):
+    def test_vendor_license_check_works_inside_the_exported_worker(self):
+        """The runner re-checks the source license with inspect.classify_license; its lazy imports must be exported too."""
+        from unittest.mock import patch
+        from hfqa import license_review
+        from hfqa.inspect import classify_license
+        text = ('Vendor license. Licensor grants you a worldwide license to use and modify the Model. You may create derivative works and may '
+                'distribute the Model and derivative works, provided you keep this notice. ') * 4
+        card = {'license': 'other', 'license_name': 'vendor-license', 'license_link': 'https://vendor.example.org/license'}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'HFQA_DATA': tmp}), patch.object(license_review, 'fetch_text', return_value=text):
+            self.assertTrue(classify_license('other', card)['redistributable'])
+
+
+class LicensePinTests(unittest.TestCase):
+    LIVE_OTHER = {'license': 'other', 'license_name': 'Vendor-License', 'license_decision': {'redistributable': False}}
+
+    def test_runner_honours_oracles_vendor_decision_only_for_the_same_license(self):
+        from hfqa.license_pin import runner_accepts
+        automatic = {'redistributable': True, 'automatic': True, 'license_name': 'vendor-license'}
+        manual = {'redistributable': True, 'operator_approved': True, 'license_name': 'vendor-license'}
+        self.assertTrue(runner_accepts(automatic, self.LIVE_OTHER))
+        self.assertTrue(runner_accepts(manual, self.LIVE_OTHER))
+        self.assertFalse(runner_accepts(automatic, {**self.LIVE_OTHER, 'license_name': 'another-license'}))
+        self.assertFalse(runner_accepts(automatic, {**self.LIVE_OTHER, 'license': 'cc-by-nc-4.0'}))
+        self.assertFalse(runner_accepts({'redistributable': True, 'license_name': 'vendor-license'}, self.LIVE_OTHER))  # not marked as approved
+        self.assertFalse(runner_accepts({'redistributable': False, 'automatic': True, 'license_name': 'vendor-license'}, self.LIVE_OTHER))
+        self.assertFalse(runner_accepts(None, self.LIVE_OTHER))
+
+    def test_a_plainly_free_live_license_needs_nothing_from_the_manifest(self):
+        from hfqa.license_pin import runner_accepts
+        self.assertTrue(runner_accepts(None, {'license_decision': {'redistributable': True}}))
+
+
 if __name__ == '__main__':
     unittest.main()

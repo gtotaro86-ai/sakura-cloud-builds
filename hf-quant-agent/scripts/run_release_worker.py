@@ -30,7 +30,8 @@ def run(args) -> dict:
         from hfqa.inspect import inspect_repo
         descriptors = source.get('sources') or [source]
         checked = inspect_repo(f"https://huggingface.co/{descriptors[0]['repo_id']}/tree/{descriptors[0]['revision']}")
-        if (checked.get('license_decision') or {}).get('redistributable') is not True:
+        from hfqa.license_pin import runner_accepts
+        if not runner_accepts(manifest.get('source_license'), checked):
             raise ValueError('the live pinned source license blocks automatic staging')
         token = os.environ.get('HF_TOKEN', '').strip()
         if not token:

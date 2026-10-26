@@ -47,7 +47,8 @@ def find_native_gguf_repo(repo_id: str, timeout: float = 20) -> dict | None:
             "architecture": (info.get("gguf") or {}).get("architecture"),
             "gguf_files": gguf_files[:40],
             "license": (info.get("cardData") or {}).get("license") or _tag_license(info.get("tags") or []),
-            "license_decision": classify_license((info.get("cardData") or {}).get("license") or _tag_license(info.get("tags") or []), info.get("cardData") or {}),
+            "license_decision": classify_license((info.get("cardData") or {}).get("license") or _tag_license(info.get("tags") or []),
+                                                 _absolute_license_link(info.get("cardData") or {}, info.get("id") or candidate, info.get("sha"))),
             "weights_downloaded": False,
         }
     try:
@@ -96,7 +97,7 @@ def find_third_party_gguf_repo(repo_id: str, timeout: float = 20, limit: int = 8
             best = (rank, position, {
                 "repo_id": info.get("id") or candidate, "revision": revision, "architecture": (info.get("gguf") or {}).get("architecture"),
                 "gguf_files": [s["filename"] for s in selected["sources"]][:40], "license": licence,
-                "license_decision": classify_license(licence, card), "weights_downloaded": False,
+                "license_decision": classify_license(licence, _absolute_license_link(card, candidate, revision)), "weights_downloaded": False,
                 "third_party": True, "source_set": selected["source_set"], "source_precision": selected["source_precision"],
                 "source_bytes": selected["total_source_bytes"], "downloads": item.get("downloads"),
             })
@@ -217,6 +218,7 @@ def inspect_repo(source: str, timeout: float = 30) -> dict:
     safetensors = info.get("safetensors") or {}
     parameters = safetensors.get("total")
     gguf = info.get("gguf") or {}
+    card = _absolute_license_link(card, repo_id, revision)
     license_decision = classify_license(license_id, card)
     from hfqa.provenance import identify
     return {
@@ -376,16 +378,36 @@ def detect_formats(files: list[str], config: dict | None, gguf: dict) -> list[st
     return found
 
 
+def _absolute_license_link(card: dict, repo_id: str, revision: str | None) -> dict:
+    """`license_link: LICENSE` names a file of the repository itself; make it an address that can be read."""
+    link = str((card or {}).get("license_link") or "").strip()
+    if not link or link.startswith(("http://", "https://")) or not repo_id or ".." in link or link.startswith("/"):
+        return card
+    return {**card, "license_link": f"https://huggingface.co/{repo_id}/resolve/{revision or 'main'}/{urllib.parse.quote(link)}"}
+
+
 def classify_license(license_id: str | None, card: dict) -> dict:
     normalized = (license_id or "").strip().lower()
     blob = json.dumps(card, ensure_ascii=False).lower()
     # A vendor license published as `other` can be approved by the operator once, by its license name.
     if normalized == "other" and (card or {}).get("license_name"):
         from hfqa.license_approvals import is_approved
+        from hfqa import license_review
         approved = is_approved(card.get("license_name"))
+        automatic = None
+        if not approved:
+            # The operator wants this to run by itself: a strict text check of the vendor license, logged with its evidence.
+            approved = automatic = license_review.auto_decide(card.get("license_name"), card.get("license_link"))
         if approved:
-            return {"redistributable": True, "reason": f"approved by the operator: {approved['license_name']} ({approved['license_link']})",
-                    "operator_approved": True, "license_name": approved["license_name"], "license_link": approved["license_link"]}
+            how = "approved automatically after a license text check" if (automatic or approved.get("automatic")) else "approved by the operator"
+            return {"redistributable": True, "reason": f"{how}: {approved['license_name']} ({approved['license_link']})",
+                    "operator_approved": not (automatic or approved.get("automatic")), "automatic": bool(automatic or approved.get("automatic")),
+                    "license_name": approved["license_name"], "license_link": approved["license_link"]}
+        review = license_review.review_for(card.get("license_name"))
+        if review:
+            restricted = any(hint in blob or hint in normalized for hint in RESTRICTED_HINTS)
+            return {"redistributable": False, "reason": f"license {card.get('license_name')}: automatic check says {review['verdict']} ({'; '.join(review.get('reasons') or [])})",
+                    "automatic_review": review, "restricted_hint": restricted}
     restricted = any(hint in blob or hint in normalized for hint in RESTRICTED_HINTS)
     if not normalized:
         return {"redistributable": False, "reason": "license not declared; publication blocked"}
