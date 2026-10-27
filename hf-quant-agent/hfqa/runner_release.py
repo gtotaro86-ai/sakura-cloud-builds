@@ -135,16 +135,47 @@ def verify_shards(files: list[dict], structure: dict, tensor_count: int) -> list
     return reports
 
 
-REPACK_MEMORY_SHARE = 0.4  # above this share of the machine's memory the repacked copy of the weights no longer fits next to the model
+JOB_SECONDS = 350 * 60      # timeout-minutes of one release job in the workflow
+SETUP_SECONDS = 10 * 60     # checkout, runtime download and bridge build before the step starts
+UPLOAD_RESERVE_SECONDS = 15 * 60
+REPACK_OFF_MEMORY_MULTIPLE = 2.0  # a model more than twice the machine's memory cannot be repacked at all: do not waste the first attempt
+ALLOCATION_FAILURES = ('CPU_REPACK', 'insufficient memory', 'failed to allocate')
 
 
-def run_inference(llama_cli: Path, files: list[dict], logs: Path, cpus: int, memory_bytes: int | None = None) -> dict:
-    """One real generation by the stock runtime on the exact shards (the first shard loads the rest)."""
+def remaining_job_seconds(started_monotonic: float) -> int:
+    """Time left in the job for the real inference, so a long timeout cannot outlive the job and throw away the quantization."""
+    return int(JOB_SECONDS - SETUP_SECONDS - UPLOAD_RESERVE_SECONDS - (time.monotonic() - started_monotonic))
+
+
+def run_inference(llama_cli: Path, files: list[dict], logs: Path, cpus: int, memory_bytes: int | None = None, remaining_seconds: int | None = None) -> dict:
+    """One real generation by the stock runtime on the exact shards (the first shard loads the rest).
+
+    The proven default (weight repacking on) is tried first. If the runtime then cannot allocate its repacked copy of the weights (a model larger than
+    the machine's memory), the same test is repeated once with the stock option --no-repack; any other failure is reported as it is.
+    """
     total = sum(item['size'] for item in files)
     budget = inference_budget(total, cpus)
-    repack = not (memory_bytes and total > REPACK_MEMORY_SHARE * memory_bytes)
+    repack = not (memory_bytes and total > REPACK_OFF_MEMORY_MULTIPLE * memory_bytes)
     started = time.monotonic()
-    result = test_inference(llama_cli, files[0]['path'], logs, budget['timeout_seconds'], threads=budget['threads'], predict=budget['predict'], repack=repack)
+    retried = False
+    while True:
+        timeout = budget['timeout_seconds']
+        if remaining_seconds is not None:
+            timeout = int(max(300, min(timeout, remaining_seconds - (time.monotonic() - started))))
+        try:
+            result = test_inference(llama_cli, files[0]['path'], logs, timeout, threads=budget['threads'], predict=budget['predict'], repack=repack)
+            break
+        except RuntimeError as error:
+            log_path = str(error).rpartition('logs: ')[2].strip()
+            try:
+                tail = Path(log_path).read_bytes()[-65536:].decode('utf-8', 'replace') if log_path else ''
+            except OSError:
+                tail = ''
+            if repack and not retried and any(marker in tail for marker in ALLOCATION_FAILURES):
+                repack, retried = False, True
+                continue
+            raise
+    result['repack_retried_without_repacking'] = retried
     result.update(seconds=round(time.monotonic() - started, 1), model_bytes=total, shard_count=len(files),
                   shard_sha256_after_inference={item['name']: sha256_file(item['path']) for item in files})
     if any(result['shard_sha256_after_inference'][item['name']] != item['sha256'] for item in files):
@@ -187,7 +218,7 @@ def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, lla
     files = materialize(stream, work / quant, stem, log=log)
     t2 = time.monotonic()
     shard_reports = verify_shards(files, structure, structure['tensor_count'])
-    inference = run_inference(Path(llama_cli), files, work / quant / 'logs', facts['cpus'] or 1, facts.get('memory_total_bytes'))
+    inference = run_inference(Path(llama_cli), files, work / quant / 'logs', facts['cpus'] or 1, facts.get('memory_total_bytes'), remaining_job_seconds(t0))
     t3 = time.monotonic()
     staging = None
     if api is not None:

@@ -26,7 +26,7 @@ SOURCE_TYPES = {0, 1, 8, 30}
 ROW_WORK_BYTES = 8 * 1024**2
 MAX_SHARD_BYTES = 50_000_000_000  # the Hub's per-file limit
 # People want ONE file per quantization. Everything up to this size is one file; only a larger output is split (still below the Hub limit).
-DEFAULT_SHARD_BYTES = 45_000_000_000
+DEFAULT_SHARD_BYTES = 49_000_000_000  # one file per quant up to here; 1 GB below the Hub limit (Ornith Q2_K, 45.8 GB, must not become 45 GB + 0.8 GB)
 
 
 def _field(value, key):

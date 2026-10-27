@@ -93,30 +93,63 @@ class BudgetTests(unittest.TestCase):
 
 class RepackTests(unittest.TestCase):
     """Regression (Ornith-1.5-122B, Q2_K 45 GB on a 16 GB runner): llama-cli wanted a 27 GB repacked copy of the weights and the real inference failed after 4.5 h."""
-    def run_with(self, model_bytes, memory_bytes):
+    def run_with(self, model_bytes, memory_bytes, *, stderr_texts=(), remaining=None):
+        """Run run_inference with a fake runtime that fails once per entry of stderr_texts (the text goes to its stderr log); returns the calls and the result."""
         from unittest.mock import patch
         from hfqa import runner_release
+        calls, queue = [], list(stderr_texts)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'm.gguf'
             path.write_bytes(b'x')
             item = {'name': 'm.gguf', 'path': str(path), 'size': model_bytes, 'sha256': sha256_file(path)}
-            item['size'] = model_bytes
-            seen = {}
 
             def fake(binary, model, logs, timeout, **kwargs):
-                seen.update(kwargs)
-                return {}
+                calls.append({'timeout': timeout, **kwargs})
+                if queue:
+                    log = Path(tmp) / f'err{len(calls)}.log'
+                    log.write_text(queue.pop(0))
+                    raise RuntimeError(f'stock runtime inference failed (exit 1); logs: {log}')
+                return {'model_sha256': 'x'}
             with patch.object(runner_release, 'test_inference', fake):
                 try:
-                    runner_release.run_inference(Path('llama-cli'), [item], Path(tmp), 4, memory_bytes)
-                except RuntimeError:
-                    pass  # the shard-size check after the fake inference is not what is tested here
-        return seen
+                    result = runner_release.run_inference(Path('llama-cli'), [item], Path(tmp), 4, memory_bytes, remaining)
+                except RuntimeError as error:
+                    result = error
+        return calls, result
 
-    def test_a_model_that_does_not_fit_beside_its_repacked_copy_runs_without_repacking(self):
-        self.assertIs(self.run_with(45 * 10 ** 9, 16 * 10 ** 9)['repack'], False)
-        self.assertIs(self.run_with(2 * 10 ** 9, 16 * 10 ** 9)['repack'], True)  # ordinary models keep the proven default
-        self.assertIs(self.run_with(45 * 10 ** 9, None)['repack'], True)  # unknown memory: nothing changes
+    def test_the_proven_default_is_tried_first_and_the_retry_is_only_for_allocation_failures(self):
+        calls, result = self.run_with(45 * 10 ** 9, 32 * 10 ** 9, stderr_texts=['E failed to allocate CPU_REPACK buffer of size 27044831232'])
+        self.assertEqual([c['repack'] for c in calls], [True, False])  # failed on the allocation, then ran without repacking
+        self.assertIs(result['repack_retried_without_repacking'], True)
+        calls, result = self.run_with(2 * 10 ** 9, 16 * 10 ** 9)
+        self.assertEqual([c['repack'] for c in calls], [True])  # an ordinary model never leaves the default
+        self.assertIs(result['repack_retried_without_repacking'], False)
+        calls, result = self.run_with(2 * 10 ** 9, 16 * 10 ** 9, stderr_texts=['E unknown tensor type'])
+        self.assertEqual(len(calls), 1)  # any other failure is reported, not retried
+        self.assertIsInstance(result, RuntimeError)
+        calls, result = self.run_with(2 * 10 ** 9, 16 * 10 ** 9, stderr_texts=['E failed to allocate X', 'E failed to allocate Y'])
+        self.assertEqual(len(calls), 2)  # and the retry happens at most once
+        self.assertIsInstance(result, RuntimeError)
+
+    def test_a_model_far_larger_than_the_memory_skips_the_hopeless_first_attempt(self):
+        calls, _ = self.run_with(45 * 10 ** 9, 16 * 10 ** 9)
+        self.assertEqual([c['repack'] for c in calls], [False])
+        calls, _ = self.run_with(45 * 10 ** 9, None)  # unknown memory: the default
+        self.assertEqual([c['repack'] for c in calls], [True])
+        calls, _ = self.run_with(23 * 10 ** 9, 16 * 10 ** 9)  # Nanbeige Q5_K_M (1.4 x memory) passed with repacking
+        self.assertEqual([c['repack'] for c in calls], [True])
+
+    def test_the_inference_timeout_never_outlives_the_job(self):
+        from hfqa.quantize import inference_budget
+        full = inference_budget(45 * 10 ** 9, 4)['timeout_seconds']
+        self.assertGreater(full, 6000)
+        calls, _ = self.run_with(45 * 10 ** 9, 16 * 10 ** 9, remaining=1800)
+        self.assertLessEqual(calls[0]['timeout'], 1800)
+        calls, _ = self.run_with(45 * 10 ** 9, 16 * 10 ** 9, remaining=10)
+        self.assertEqual(calls[0]['timeout'], 300)  # a floor, so that a late start still gets an honest attempt
+        from hfqa import runner_release
+        import time
+        self.assertLess(runner_release.remaining_job_seconds(time.monotonic() - 3 * 3600), 350 * 60 - 3 * 3600)
 
     def test_the_stock_option_is_added_to_the_command_only_when_asked(self):
         from unittest.mock import patch
