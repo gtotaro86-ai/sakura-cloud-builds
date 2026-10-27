@@ -202,6 +202,32 @@ class StreamingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'uniform metadata'):
             model_hparams(metadata)
 
+    def test_moe_models_without_a_dense_feed_forward_width_use_the_expert_width_only_if_the_plan_ignores_it(self):
+        """Regression (Ornith-1.5-122B, qwen35moe): the key 'feed_forward_length' does not exist; the runner failed before quantizing."""
+        metadata = dict(self.remote.metadata)
+        metadata.pop('qwen2.feed_forward_length')
+        with self.assertRaisesRegex(ValueError, 'missing or invalid native planner metadata'):
+            model_hparams(metadata)
+        metadata['qwen2.expert_feed_forward_length'] = 1536
+        self.assertEqual(model_hparams(metadata)[1][1], 1536)
+
+        def native(depends):
+            quantizer = NativeQuantizer.__new__(NativeQuantizer)
+
+            def hfqa_plan(ftype, arch, hparams, count, names, shapes, dims, inputs, outputs):
+                for i in range(count):
+                    outputs[i] = inputs[i]
+                if depends:
+                    outputs[0] = hparams[1] % 7
+                return 0
+            quantizer.bridge = SimpleNamespace(hfqa_plan=hfqa_plan, hfqa_error=lambda: b'')
+            return quantizer
+        remote = SimpleNamespace(metadata=metadata, tensors=self.remote.tensors)
+        plan = native(False).plan(remote, 'Q2_K')
+        self.assertEqual(set(plan), {t.name for t in self.remote.tensors})
+        with self.assertRaisesRegex(ValueError, 'depends on the feed-forward width'):
+            native(True).plan(remote, 'Q2_K')
+
     def test_native_rows_preflight_before_any_ctypes_call(self):
         native = NativeQuantizer.__new__(NativeQuantizer)
         for raw, cols in ((b'', 32), (b'x', 0), (b'x', -1), (b'x', 8 * 1024**2)):

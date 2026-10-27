@@ -20,6 +20,8 @@ def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str
             from hfqa.image_components import is_image_weight_candidate
             if not is_image_weight_candidate(name):continue
         if not name.lower().endswith('.gguf') or not re.search(r'(?:^|[-_.])(q8_0|f16|bf16)(?:[-_.]|$)',name.lower()):continue
+        # Companion files are no model weights: the vision projector (mmproj) is far smaller than the model and would otherwise win "smallest complete set".
+        if re.search(r'mmproj|(?:^|[-_./])imatrix',name.lower()):continue
         split=re.search(r'-(\d{5})-of-(\d{5})(?=\.gguf$)',name,re.I)
         key=re.sub(r'-\d{5}-of-\d{5}(?=\.gguf$)','',name,flags=re.I)
         lfs=item.get('lfs') or {};digest=lfs.get('sha256') or lfs.get('oid') or ''

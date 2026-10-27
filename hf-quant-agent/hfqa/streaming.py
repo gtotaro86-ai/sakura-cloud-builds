@@ -81,6 +81,9 @@ def _uniform_int(metadata, key, default=None):
     return value
 
 
+FFN_KEYS = ('feed_forward_length', 'expert_feed_forward_length', 'expert_shared_feed_forward_length')
+
+
 def model_hparams(metadata):
     arch = metadata.get('general.architecture')
     if not isinstance(arch, str) or not re.fullmatch('[a-z0-9_-]+', arch):
@@ -90,7 +93,10 @@ def model_hparams(metadata):
     head = _uniform_int(metadata, prefix + 'attention.head_count')
     if not head or not embd or embd % head:
         raise ValueError('invalid native attention dimensions')
-    params = [embd, _uniform_int(metadata, prefix + 'feed_forward_length'),
+    # Mixture-of-experts models without a dense feed-forward block (qwen35moe) carry only the expert widths; the width is a placeholder for the
+    # planner, which NativeQuantizer.plan proves irrelevant for the real tensor catalogue before it is used.
+    ffn_key = next((prefix + key for key in FFN_KEYS if prefix + key in metadata), prefix + 'feed_forward_length')
+    params = [embd, _uniform_int(metadata, ffn_key),
               _uniform_int(metadata, prefix + 'block_count'), head,
               _uniform_int(metadata, prefix + 'attention.head_count_kv', head),
               _uniform_int(metadata, prefix + 'expert_count', 0),
@@ -148,10 +154,20 @@ class NativeQuantizer:
         shapes = (ctypes.c_int64 * (count * 4))(*flat)
         inputs = (ctypes.c_int * count)(*(_field(t, 'type') for t in tensors))
         outputs = (ctypes.c_int * count)()
-        hparams = (ctypes.c_uint32 * 8)(*values)
-        if self.bridge.hfqa_plan(QUANTS[quant], arch.encode(), hparams, count, names, shapes, dims, inputs, outputs):
-            raise RuntimeError((self.bridge.hfqa_error() or b'native planner failed').decode('utf-8', 'replace'))
-        return {_field(t, 'name'): int(outputs[i]) for i, t in enumerate(tensors)}
+        def planned(hparam_values):
+            result = (ctypes.c_int * count)()
+            hparams = (ctypes.c_uint32 * 8)(*hparam_values)
+            if self.bridge.hfqa_plan(QUANTS[quant], arch.encode(), hparams, count, names, shapes, dims, inputs, result):
+                raise RuntimeError((self.bridge.hfqa_error() or b'native planner failed').decode('utf-8', 'replace'))
+            return [int(result[i]) for i in range(count)]
+        types = planned(values)
+        if (arch + '.feed_forward_length') not in remote.metadata:
+            # The model has no dense feed-forward width, so a stand-in was used. Accept it only if the plan does not depend on it at all.
+            other = list(values)
+            other[1] = values[1] * 2 + 1
+            if other[1] >= 2 ** 32 or planned(other) != types:
+                raise ValueError('native type plan depends on the feed-forward width, which this model does not declare; refusing to guess')
+        return {_field(t, 'name'): types[i] for i, t in enumerate(tensors)}
 
     def quantize_rows(self, raw, input_type, output_type, cols):
         import numpy as np

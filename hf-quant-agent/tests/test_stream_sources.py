@@ -72,6 +72,13 @@ class StreamSourceSelectionTests(unittest.TestCase):
         only_q8 = self.select(items[1:3])
         self.assertEqual((only_q8["sources"][0]["filename"], only_q8["source_precision"]), ("small-Q8_0-00001-of-00001.gguf", "q8_0"))
 
+    def test_the_vision_projector_is_never_taken_for_the_model(self):
+        """Regression (Ornith-1.5-122B): mmproj-...-BF16.gguf is 0.9 GB next to a 249 GB model and used to win 'smallest complete set'."""
+        items = [shard(1, 1, stem="Ornith-BF16", size=249_000_000_000), shard(1, 1, stem="mmproj-Ornith-BF16", size=910_000_000), shard(1, 1, stem="imatrix-BF16", size=5)]
+        self.assertEqual(self.select(items)["sources"][0]["filename"], "Ornith-BF16-00001-of-00001.gguf")
+        with self.assertRaises(ValueError):
+            self.select([shard(1, 1, stem="mmproj-model-F16")])
+
     def test_incomplete_q8_does_not_hide_complete_f16(self):
         result = self.select([shard(1), shard(1, 1, stem="model-F16")])
         self.assertIn("F16", result["sources"][0]["filename"])
