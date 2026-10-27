@@ -13,10 +13,12 @@ def shard(number, count=2, *, stem="model-Q8_0", size=4_000_000_000, **changes):
 
 
 class StreamSourceSelectionTests(unittest.TestCase):
+    classify = staticmethod(lambda descriptor: None)  # header classification of files without a tag in their name; offline here
+
     def select(self, siblings, analysis=None):
         analysis = analysis or {"repo_id": "owner/source-GGUF", "revision": "a" * 40}
         with patch("hfqa.stream_sources._json", return_value={"siblings": siblings}) as network:
-            result = select_stream_sources(analysis)
+            result = select_stream_sources(analysis, classify=self.classify)
         self.assertEqual(network.call_count, 1)
         self.assertIn("/revision/" + analysis.get("native_gguf_repo", analysis)["revision"],
                       network.call_args.args[0])
@@ -78,6 +80,25 @@ class StreamSourceSelectionTests(unittest.TestCase):
         self.assertEqual(self.select(items)["sources"][0]["filename"], "Ornith-BF16-00001-of-00001.gguf")
         with self.assertRaises(ValueError):
             self.select([shard(1, 1, stem="mmproj-model-F16")])
+
+    def test_an_untagged_full_precision_file_is_found_by_its_header(self):
+        """Spark-X2.6-1.7B-GGUF: Spark-X2.6-1.7B.gguf (3.4 GB, 16 bit) sits beside -Q8_0 and -Q4_K_M and used to be passed over."""
+        items = [shard(1, 1, stem="Spark-X2.6-1.7B-Q8_0", size=1_820_113_440), shard(1, 1, stem="Spark-X2.6-1.7B-Q4_K_M", size=1_768_720_512),
+                 {"rfilename": "Spark-X2.6-1.7B.gguf", "size": 3_420_932_640, "lfs": {"sha256": "e" * 64}}]
+        asked = []
+        self.classify = lambda descriptor: asked.append(descriptor["filename"]) or "f16"
+        result = self.select(items)
+        self.assertEqual((result["sources"][0]["filename"], result["source_precision"]), ("Spark-X2.6-1.7B.gguf", "f16"))
+        self.assertEqual(asked, ["Spark-X2.6-1.7B.gguf"])  # only the unlabelled single file is read, never a tagged or low-bit one
+        self.classify = lambda descriptor: "bf16"
+        self.assertEqual(self.select(items)["source_precision"], "bf16")
+        self.classify = lambda descriptor: None  # a header that says something else (or cannot be read): the Q8_0 stays the source
+        self.assertEqual(self.select(items)["source_precision"], "q8_0")
+
+        def broken(descriptor):
+            raise OSError("range request refused")
+        self.classify = broken
+        self.assertEqual(self.select(items)["source_precision"], "q8_0")
 
     def test_incomplete_q8_does_not_hide_complete_f16(self):
         result = self.select([shard(1), shard(1, 1, stem="model-F16")])
