@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hfqa.gguf import validate_gguf
 from hfqa.imatrix_data import DATASET, DATASET_ID, DATASET_LICENSE, DATASET_SHA256
+from hfqa import runner_quality
 from hfqa.runner_release import SCHEMA, remaining_job_seconds, run_inference, runner_facts, sha256_file, stage_on_branch
 from hfqa.streaming import shard_filename
 
@@ -112,7 +113,7 @@ def make_matrix(source: Path, tools: dict, work: Path, cpus: int, *, log=print) 
 
 
 def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_dir: Path, work: Path, job_id: str, api=None, branch: str | None = None,
-                   env: dict | None = None, log=print, fetch=fetch_source, tools=None) -> dict:
+                   env: dict | None = None, log=print, fetch=fetch_source, tools=None, measure=runner_quality.measure) -> dict:
     """All requested quants in this job (cheap for models of this size). Returns {quant: receipt}; nothing is written to `main`."""
     if source.get('sources') and len(source['sources']) != 1:
         raise ValueError('the importance-matrix path takes exactly one source file')
@@ -124,6 +125,7 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
     for name, tool in tools.items():
         if not Path(tool).is_file():
             raise FileNotFoundError(f'the stock runtime lacks {Path(tool).name}')
+    perplexity = Path(tools.get('perplexity') or runtime_dir / 'llama-perplexity')  # optional: without it the deviation is simply not measured
     t0 = time.monotonic()
     facts = runner_facts(work)
     cpus = facts['cpus'] or 1
@@ -137,7 +139,7 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
     t_matrix = time.monotonic()
     stem = manifest.get('output_stem') or Path(descriptor['filename']).stem
     requantize = str(manifest.get('source_precision') or '').lower() == 'q8_0'
-    receipts = {}
+    receipts, outputs = {}, {}
     for quant in quants:
         t1 = time.monotonic()
         out = work / quant / shard_filename(stem, quant, 0, 1)
@@ -175,7 +177,16 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
             'timings_seconds': {'matrix': round(t_matrix - t0, 1), 'quantize': round(q_seconds, 1), 'verify_and_infer': round(t2 - t1 - q_seconds, 1), 'upload': round(t3 - t2, 1)},
             'note': 'Stock llama-quantize with an importance matrix from fixed calibration text; one smoke prompt; no quality benchmark is claimed.',
         }
-        if not manifest.get('keep_outputs'):
-            out.unlink(missing_ok=True)  # disk is the scarce resource on a runner
+        outputs[quant] = out
         log(json.dumps({'event': 'quant_done', 'quant': quant, 'bytes': item['size']}), flush=True)
+    # How far each quant is from the source on a fixed, different text (perplexity, KL divergence, top-token agreement); a failure here is a note, never a failed release.
+    if manifest.get('quality'):
+        quality = measure(source_path, outputs, perplexity, work, cpus, descriptor['size'], log=log) if perplexity.is_file() else {'skipped': 'llama-perplexity is not part of the stock runtime'}
+    else:
+        quality = {'skipped': 'not requested'}
+    for quant, receipt in receipts.items():
+        receipt['quality'] = ({'evidence': quality['evidence'], 'statistics': quality['per_quant'][quant]} if 'evidence' in quality else {'skipped': quality['skipped']})
+    if not manifest.get('keep_outputs'):
+        for out in outputs.values():
+            out.unlink(missing_ok=True)  # disk is the scarce resource on a runner
     return receipts
