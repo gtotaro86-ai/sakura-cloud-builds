@@ -18,7 +18,9 @@ from pathlib import Path
 REPO = 'ggml-org/llama.cpp'
 KIND = 'source'
 HEX40 = re.compile(r'[a-f0-9]{40}')
-TARGETS = ('llama-imatrix', 'llama-quantize', 'llama-cli', 'llama-perplexity')
+# llama-cli is built only together with the server and its web UI in current master; llama-completion is the same plain text generation tool (same options).
+INFERENCE_TOOL = 'llama-completion'
+TARGETS = ('llama-imatrix', 'llama-quantize', INFERENCE_TOOL, 'llama-perplexity')
 FILE = 'source-builds.json'
 
 

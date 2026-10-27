@@ -60,7 +60,12 @@ def run(args) -> dict:
     work = Path(args.work)
     env = {k: os.environ[k] for k in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA', 'GITHUB_REPOSITORY', 'RUNNER_NAME', 'RUNNER_OS', 'RUNNER_ARCH') if k in os.environ}
     build = source_build_evidence(manifest, args.runtime_dir, args.build_receipt)
-    receipts = release_quants(manifest, source, list(manifest['quants']), runtime_dir=args.runtime_dir, work=work, job_id=args.job_id, api=api, branch=args.branch, env=env)
+    tools = None
+    if build:  # built from source: the plain text generation tool is llama-completion (llama-cli exists only with the server build)
+        from hfqa import source_builds
+        folder = Path(args.runtime_dir)
+        tools = {'imatrix': folder / 'llama-imatrix', 'quantize': folder / 'llama-quantize', 'cli': folder / source_builds.INFERENCE_TOOL, 'perplexity': folder / 'llama-perplexity'}
+    receipts = release_quants(manifest, source, list(manifest['quants']), runtime_dir=args.runtime_dir, work=work, job_id=args.job_id, api=api, branch=args.branch, env=env, tools=tools)
     digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     folder = work / 'receipts'
     folder.mkdir(parents=True, exist_ok=True)

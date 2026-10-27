@@ -1,7 +1,7 @@
 """Build llama.cpp from the exact master commit Oracle chose, for the importance-matrix path (runs in a job that has no secrets).
 
 The checkout must be that commit (`git rev-parse HEAD`), the build is static (no library path surprises) and limited to the four tools the
-imatrix path uses. The receipt carries the SHA-256 of every binary; the imatrix job re-hashes what it downloads and Oracle compares the same
+imatrix path uses (llama-imatrix, llama-quantize, llama-completion for the inference test, llama-perplexity). The receipt carries the SHA-256 of every binary; the imatrix job re-hashes what it downloads and Oracle compares the same
 hashes with the ones in the job receipt. Without a secret in this job's environment the CMake scripts of an unreleased commit can read nothing
 worth stealing; the build also runs with a minimal environment of its own.
 """
@@ -57,7 +57,7 @@ def build(manifest: dict, llama: Path, destination: Path, env: dict | None = Non
     started = time.monotonic()
     folder = llama / 'build'
     cpus = os.cpu_count() or 2
-    # The commit goes into the binary exactly, so that `llama-cli` reports it (the shallow checkout would otherwise yield build 1 and a short hash).
+    # The commit goes into the binary exactly, so that the tools report it (the shallow checkout would otherwise yield build 1 and a short hash).
     run(['cmake', '-S', str(llama), '-B', str(folder), *FLAGS, f"-DLLAMA_BUILD_COMMIT={chosen['revision']}", '-DLLAMA_BUILD_NUMBER=0'], llama, log)
     run(['cmake', '--build', str(folder), '--config', 'Release', '-j', str(cpus), '--target', *source_builds.TARGETS], llama, log)
     binaries = {}
@@ -67,10 +67,10 @@ def build(manifest: dict, llama: Path, destination: Path, env: dict | None = Non
             raise FileNotFoundError(f'{name} was not produced exactly once')
         shutil.copy2(found[0], destination / name)
         binaries[name] = sha256(destination / name)
-    probe = subprocess.run([str(destination / 'llama-cli'), '--version'], capture_output=True, text=True, env=clean_env(), timeout=60, check=False)
+    probe = subprocess.run([str(destination / source_builds.INFERENCE_TOOL), '--version'], capture_output=True, text=True, env=clean_env(), timeout=60, check=False)
     shown = probe.stdout + probe.stderr
     if probe.returncode != 0 or chosen['revision'][:9] not in shown:
-        raise RuntimeError(f'llama-cli does not report the commit it was built from (exit {probe.returncode}): {shown[-400:]}')
+        raise RuntimeError(f'{source_builds.INFERENCE_TOOL} does not report the commit it was built from (exit {probe.returncode}): {shown[-400:]}')
     receipt = {'repo': source_builds.REPO, 'head': head, 'binaries': binaries, 'static': True, 'flags': FLAGS, 'version_output': shown.strip()[-400:],
                'seconds': round(time.monotonic() - started, 1), 'cpus': cpus, 'build_run_id': int((env or os.environ).get('GITHUB_RUN_ID') or 0)}
     (destination / 'build-receipt.json').write_text(json.dumps(receipt, indent=1, sort_keys=True), encoding='utf-8')
