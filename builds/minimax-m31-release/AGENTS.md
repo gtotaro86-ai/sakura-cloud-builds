@@ -1,3 +1,0 @@
-# Publish a complete authorized MiniMax variant
-
-The user authorized autonomous publication of Q2_K, Q3_K_M, Q4_K_M and Q5_K_M from original run 39908350992 and exact build commit 35fe24364aede18b80e7789cff74ae5a4f2bb231. request.json selects one of these four variants. Require successful qualifier/assets and all of the selected variant's expected shard jobs (4/5/6/7), immutable staging receipts, every native/producer/Hub SHA256 and size, all source/tensor proofs and auxiliary identities. Reuse the original assembler and publisher without changing frozen build sources. No partial model, model-body read, paid resource or restart of active shard jobs. Existing published files are verified idempotently and never rebuilt. The whole-build finalizer remains configured.

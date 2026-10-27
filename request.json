@@ -1,8 +1,0 @@
-{
-  "model": "InternScience/Sage-A1.5",
-  "source_revision": "0e3205cf441cf01df0c0d238cc4738d0e43b4ca7",
-  "variants": ["Q4_K_M", "Q5_K_M"],
-  "publish": true,
-  "paid_resources": false
-}
-

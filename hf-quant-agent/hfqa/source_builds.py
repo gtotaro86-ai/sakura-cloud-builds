@@ -47,18 +47,56 @@ def validate(value) -> dict:
     return {'kind': KIND, 'repo': REPO, 'revision': revision, 'tag': value['tag']}
 
 
+MAX_FAILED_COMMITS = 3  # per architecture: after that the job waits for an official release
+FAILURES = 'source-build-failures.json'
+
+
+def _failures() -> dict:
+    try:
+        value = json.loads((_data() / FAILURES).read_text(encoding='utf-8'))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record_failure(revision: str, architecture: str) -> None:
+    """The build of this commit failed: it is never chosen again, the next master commit is waited for (at most MAX_FAILED_COMMITS per architecture)."""
+    if not (isinstance(revision, str) and HEX40.fullmatch(revision)):
+        raise ValueError('not a commit')
+    failures = _failures()
+    failures[revision] = {'architecture': str(architecture), 'at': datetime.now(timezone.utc).isoformat()}
+    path = _data() / FAILURES
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, name = tempfile.mkstemp(prefix='.source-build-failures-', dir=path.parent)
+    with os.fdopen(handle, 'w', encoding='utf-8') as out:
+        json.dump(failures, out, indent=1, sort_keys=True)
+    os.replace(name, path)
+
+
 def candidate(architecture, cache_dir: Path | None = None) -> dict | None:
-    """The descriptor of the cached master commit when that commit knows the architecture (no network access)."""
+    """The descriptor of the cached master commit when that commit knows the architecture (no network access). A commit whose build failed is
+    skipped (the next head is waited for), and after MAX_FAILED_COMMITS failures for the architecture there is none."""
     if not architecture:
         return None
     from hfqa import llama_arch
     cached = llama_arch.cached_master(cache_dir or _data())
     if not cached or not llama_arch.knows(cached.get('gguf_architectures'), architecture):
         return None
+    failed = _failures()
+    if cached.get('revision') in failed or sum(1 for item in failed.values() if llama_arch.normalize(item.get('architecture')) == llama_arch.normalize(architecture)) >= MAX_FAILED_COMMITS:
+        return None
     try:
         return descriptor(cached['revision'])
     except (KeyError, ValueError):
         return None
+
+
+def converts(hf_classes, cache_dir: Path | None = None) -> bool:
+    """Does the cached master commit's own converter read one of these Hugging Face architecture classes? (A model without a GGUF needs it.)"""
+    from hfqa import llama_arch
+    cached = llama_arch.cached_master(cache_dir or _data()) or {}
+    known = set(cached.get('hf_converter_architectures') or ())
+    return any(str(name) in known for name in hf_classes or ())
 
 
 def qualified_quants() -> set:
@@ -103,5 +141,5 @@ def accepts(manifest: dict, job_id: str) -> bool:
         chosen = validate(manifest.get('runtime'))
     except ValueError:
         return False
-    return (manifest.get('runtime_revision') == chosen['revision'] and isinstance(manifest.get('imatrix'), dict)
+    return (manifest.get('runtime_revision') == chosen['revision'] and (isinstance(manifest.get('imatrix'), dict) or isinstance(manifest.get('plain'), dict))
             and is_registered(chosen['revision'], job_id))

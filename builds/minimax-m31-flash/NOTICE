@@ -1,5 +1,0 @@
-MiniMax-M3.1-Flash
-Copyright (c) 2026 MiniMax
-Original model and license: MiniMaxAI/MiniMax-M3.1-Flash, MINIMAX COMMUNITY LICENSE.
-Sakura: CPU requantization of the released hybrid NVFP4/MXFP8 checkpoint. All experts and all 60 sparse attention layers are retained.
-llama.cpp is used under its upstream MIT license; runtime.patch contains changes to the pinned upstream runtime.

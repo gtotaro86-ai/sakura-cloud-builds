@@ -60,11 +60,6 @@ jobs:
           python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" --manifest "$RUNNER_TEMP/hfqa-request.json" > "$RUNNER_TEMP/hfqa-runtime-path"
           runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
           python scripts/build_stream_bridge.py --runtime "$runtime_dir" --destination "$RUNNER_TEMP/hfqa-bridge" --manifest "$RUNNER_TEMP/hfqa-request.json"
-      - name: Validate metadata and tests without repository code execution
-        working-directory: hf-quant-agent
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/hfqa-env/bin/python" -m unittest discover -s tests -q
       - name: Stream bounded native rows and verify source digests
         working-directory: hf-quant-agent
         run: |

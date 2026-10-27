@@ -25,6 +25,7 @@ CONTEXT = 128
 IMATRIX_TIMEOUT_S = 40 * 60
 QUANTIZE_TIMEOUT_S = 40 * 60
 METHOD = 'stock_imatrix'
+METHOD_PLAIN = 'stock_quantize'  # the same stock tools without an importance matrix (used for llama.cpp built from source; hfqa/source_builds.py)
 
 
 def fetch_source(descriptor: dict, directory: Path) -> Path:
@@ -135,7 +136,8 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
         raise RuntimeError('the source is not a valid GGUF')
     structure = {'architecture': report['architecture'], 'tensor_count': report['tensor_count'], 'tensor_name_set_sha256': report['tensor_name_set_sha256'],
                  'tensor_type_histogram': report.get('tensor_type_histogram')}
-    matrix = make_matrix(source_path, tools, work, cpus, log=log)
+    plain = isinstance(manifest.get('plain'), dict)
+    matrix = None if plain else make_matrix(source_path, tools, work, cpus, log=log)
     t_matrix = time.monotonic()
     stem = manifest.get('output_stem') or Path(descriptor['filename']).stem
     requantize = str(manifest.get('source_precision') or '').lower() == 'q8_0'
@@ -144,7 +146,8 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
         t1 = time.monotonic()
         out = work / quant / shard_filename(stem, quant, 0, 1)
         out.parent.mkdir(parents=True, exist_ok=True)
-        command = [str(tools['quantize']), '--imatrix', str(matrix['path'])] + (['--allow-requantize'] if requantize else []) + [str(source_path), str(out), quant, str(cpus)]
+        command = ([str(tools['quantize'])] + ([] if plain else ['--imatrix', str(matrix['path'])]) + (['--allow-requantize'] if requantize else [])
+                   + [str(source_path), str(out), quant, str(cpus)])
         q_seconds = run_tool(command, work / quant / 'logs', 'quantize', QUANTIZE_TIMEOUT_S)
         check = validate_gguf(out, expected_architecture=structure['architecture'])
         if check.get('structure_valid') is not True or check['tensor_count'] != structure['tensor_count'] or check['tensor_name_set_sha256'] != structure['tensor_name_set_sha256']:
@@ -158,13 +161,13 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
                                       message=f'HFQA validated {quant} (staging, not a release)')
         t3 = time.monotonic()
         receipts[quant] = {
-            'schema': SCHEMA, 'method': METHOD, 'job_id': job_id, 'quant': quant, 'state': 'RUNNER_VALIDATED' + ('_STAGED' if staging else ''),
+            'schema': SCHEMA, 'method': METHOD_PLAIN if plain else METHOD, 'job_id': job_id, 'quant': quant, 'state': 'RUNNER_VALIDATED' + ('_STAGED' if staging else ''),
             'runner': {**facts, **(env or {})},
-            'native_identity': {'runtime_revision': manifest['runtime_revision'], 'quantize_sha256': sha256_file(tools['quantize']),
-                                'imatrix_tool_sha256': matrix['evidence']['tool_sha256'], 'llama_sha256': sha256_file(tools['cli'])},
+            'native_identity': {'runtime_revision': manifest['runtime_revision'], 'quantize_sha256': sha256_file(tools['quantize']), 'llama_sha256': sha256_file(tools['cli']),
+                                **({} if plain else {'imatrix_tool_sha256': matrix['evidence']['tool_sha256']})},
             'source': {'descriptors': [descriptor], 'structure': structure, 'source_sha256_verified': True, 'concatenated_source_sha256': descriptor['sha256'],
                        'source_materialized': True},
-            'imatrix': matrix['evidence'],
+            **({} if plain else {'imatrix': matrix['evidence']}),
             'quantize': {'command': [Path(command[0]).name] + [Path(a).name if a.startswith('/') else a for a in command[1:]], 'seconds': q_seconds},
             'output': {'shard_count': 1, 'total_bytes': item['size'], 'tensor_count': structure['tensor_count'],
                        'shards': [{'name': item['name'], 'size': item['size'], 'sha256': item['sha256']}],
@@ -175,7 +178,7 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
             'staging': staging, 'inference_tested': True, 'full_inference_test_performed': True, 'runtime_compatible': True,
             'published': False, 'hub_main_changed': False,
             'timings_seconds': {'matrix': round(t_matrix - t0, 1), 'quantize': round(q_seconds, 1), 'verify_and_infer': round(t2 - t1 - q_seconds, 1), 'upload': round(t3 - t2, 1)},
-            'note': 'Stock llama-quantize with an importance matrix from fixed calibration text; one smoke prompt; no quality benchmark is claimed.',
+            'note': ('Stock llama-quantize without an importance matrix; ' if plain else 'Stock llama-quantize with an importance matrix from fixed calibration text; ') + 'one smoke prompt; no quality benchmark is claimed.',
         }
         outputs[quant] = out
         log(json.dumps({'event': 'quant_done', 'quant': quant, 'bytes': item['size']}), flush=True)

@@ -1,6 +1,0 @@
-Recursive Flint
-Original model: Recursive Superintelligence, Inc. (RecursiveSI/flint).
-Original license: Apache License, Version 2.0.
-Sakura redistribution: GGUF conversion and Q4_K_M/Q5_K_M CPU quantization of the pinned original BF16 weights; no expert pruning.
-
-llama.cpp software is used to construct these files and is distributed under its upstream MIT license.
