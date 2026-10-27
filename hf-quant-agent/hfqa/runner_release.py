@@ -135,12 +135,16 @@ def verify_shards(files: list[dict], structure: dict, tensor_count: int) -> list
     return reports
 
 
-def run_inference(llama_cli: Path, files: list[dict], logs: Path, cpus: int) -> dict:
+REPACK_MEMORY_SHARE = 0.4  # above this share of the machine's memory the repacked copy of the weights no longer fits next to the model
+
+
+def run_inference(llama_cli: Path, files: list[dict], logs: Path, cpus: int, memory_bytes: int | None = None) -> dict:
     """One real generation by the stock runtime on the exact shards (the first shard loads the rest)."""
     total = sum(item['size'] for item in files)
     budget = inference_budget(total, cpus)
+    repack = not (memory_bytes and total > REPACK_MEMORY_SHARE * memory_bytes)
     started = time.monotonic()
-    result = test_inference(llama_cli, files[0]['path'], logs, budget['timeout_seconds'], threads=budget['threads'], predict=budget['predict'])
+    result = test_inference(llama_cli, files[0]['path'], logs, budget['timeout_seconds'], threads=budget['threads'], predict=budget['predict'], repack=repack)
     result.update(seconds=round(time.monotonic() - started, 1), model_bytes=total, shard_count=len(files),
                   shard_sha256_after_inference={item['name']: sha256_file(item['path']) for item in files})
     if any(result['shard_sha256_after_inference'][item['name']] != item['sha256'] for item in files):
@@ -183,7 +187,7 @@ def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, lla
     files = materialize(stream, work / quant, stem, log=log)
     t2 = time.monotonic()
     shard_reports = verify_shards(files, structure, structure['tensor_count'])
-    inference = run_inference(Path(llama_cli), files, work / quant / 'logs', facts['cpus'] or 1)
+    inference = run_inference(Path(llama_cli), files, work / quant / 'logs', facts['cpus'] or 1, facts.get('memory_total_bytes'))
     t3 = time.monotonic()
     staging = None
     if api is not None:

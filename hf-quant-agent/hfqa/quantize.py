@@ -153,8 +153,12 @@ def test_inference(
     *,
     threads: int = 1,
     predict: int = 16,
+    repack: bool = True,
 ) -> dict:
     """One bounded CPU inference, using the configured stock llama-cli executable.
+
+    `repack=False` passes the stock option --no-repack: the CPU backend otherwise copies the weights into a second, rearranged buffer in RAM
+    (about 60 % of the model size), which a model larger than the machine's memory cannot afford (Ornith 122B on a 16 GB runner failed there).
 
     Captures real stdout/stderr as evidence. Passing is only a smoke check and
     does not assert quality, correctness, perplexity or benchmark scores.
@@ -174,6 +178,8 @@ def test_inference(
     command = [str(binary), "-m", str(model_path), "-p", prompt,
                "-n", str(predict), "-c", "128", "--temp", "0", "-t", str(threads), "-ngl", "0",
                "--single-turn", "--no-display-prompt"]
+    if not repack:
+        command.append("--no-repack")
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = str(binary.parent) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     # Files bound memory use even if a runtime emits excessive diagnostic output.
@@ -197,7 +203,7 @@ def test_inference(
         "runtime_build": build.group(1).strip() if build else "unreported by runtime; identified by binary SHA-256",
         "model_sha256": _sha256(model_path), "returncode": completed.returncode,
         "prompt": prompt, "completion": clean.strip()[:4000],
-        "context": 128, "predict": predict, "threads": threads,
+        "context": 128, "predict": predict, "threads": threads, "weight_repacking": repack,
         "stdout_log": str(stdout_path), "stderr_log": str(stderr_path),
         "command": command, "note": "One smoke prompt; no quality benchmark is claimed.",
     }

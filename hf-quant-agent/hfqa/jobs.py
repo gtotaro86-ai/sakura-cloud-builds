@@ -401,6 +401,16 @@ class JobStore:
             lease = self.conn.execute("SELECT 1 FROM job_leases WHERE job_id=? AND expires_at>?", (job_id, time.time())).fetchone()
             if lease:
                 raise TransitionError("worker is still active; retry after it releases the job")
+            result = job.get("result") or {}
+            dispatch = result.get("github_stream") or {}
+            if dispatch.get("dispatch_intent_recorded") and dispatch.get("conclusion") in {"failure", "cancelled", "timed_out", "startup_failure"}:
+                # The run of that dispatch is over and failed: forget it (as the watchdog does), otherwise the next poll finds the same failed run
+                # again and blocks the job at once, and a retry can never start a new run.
+                result = dict(result)
+                result["github_stream"] = {"redispatches": int(dispatch.get("redispatches") or 0) + 1,
+                                           "previous_attempt": {"state": dispatch.get("state"), "conclusion": dispatch.get("conclusion"), "run_id": dispatch.get("run_id"),
+                                                                "intent_at": dispatch.get("intent_at")}}
+                self.conn.execute("UPDATE jobs SET result_json=? WHERE id=?", (json.dumps(result), job_id))
             self.conn.execute("UPDATE jobs SET state='PLANNING', error=NULL, plan_json=NULL, paused_from=NULL, retry_json='{}', updated_at=? WHERE id=?", (utcnow(), job_id))
             self._event(job_id, job["state"], "PLANNING", "operator retry; retained artifacts and checkpoints")
             return self.get(job_id)
