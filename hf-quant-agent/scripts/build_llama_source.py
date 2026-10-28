@@ -20,7 +20,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hfqa import source_builds
 
-FLAGS = ['-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=OFF', '-DGGML_NATIVE=ON', '-DLLAMA_CURL=OFF', '-DLLAMA_OPENSSL=OFF',
+# The build and inference are separate GitHub jobs and may use different CPUs.
+# Compiling for the build runner's native ISA can crash on the inference runner.
+FLAGS = ['-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=OFF', '-DGGML_NATIVE=OFF', '-DLLAMA_CURL=OFF', '-DLLAMA_OPENSSL=OFF',
          '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_SERVER=OFF', '-DLLAMA_BUILD_EXAMPLES=ON', '-DLLAMA_BUILD_TOOLS=ON']
 
 
