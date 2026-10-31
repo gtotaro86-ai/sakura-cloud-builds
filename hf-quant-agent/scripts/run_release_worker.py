@@ -41,8 +41,9 @@ def run(args) -> dict:
             raise ValueError('matrix evidence must be an object')
         matrix_input = {'path': Path(matrix_path), 'evidence': evidence}
         if qualified:
-            from hfqa.stream_matrix_qualification import validate_fixture
-            validate_fixture(manifest, source, evidence, args.quant)  # refuse before the Hub token is touched
+            from hfqa.stream_matrix_qualification import validate_stream_request
+            from hfqa.source_identity import identity
+            validate_stream_request(manifest, identity(source), evidence, args.quant)  # refuse before the Hub token is touched
     api = None
     if args.upload:
         if (manifest.get('source_license') or {}).get('redistributable') is not True:

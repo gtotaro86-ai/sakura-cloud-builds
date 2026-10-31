@@ -168,7 +168,8 @@ class ProvenanceCheckedImatrixStream(ExperimentalImatrixStream):
     def __init__(self, remote, descriptor, quant, quantizer, matrix_path, evidence, calibration, should_stop=None):
         from hfqa.imatrix_provenance import validate_matrix_provenance
         revision = getattr(quantizer, 'identity', {}).get('runtime_revision')
-        checked = validate_matrix_provenance(evidence, source=descriptor, calibration=calibration, runtime_revision=revision)
+        from hfqa.source_identity import identity
+        checked = validate_matrix_provenance(evidence, source=identity(descriptor), calibration=calibration, runtime_revision=revision)
         # Load and hash the bytes here; an arbitrary caller-supplied matrix dict
         # could otherwise claim the correct hash while containing other weights.
         matrix = load_legacy_matrix(matrix_path, checked['matrix_sha256'])
@@ -184,13 +185,11 @@ class ProvenanceCheckedImatrixStream(ExperimentalImatrixStream):
 class ProvenanceCheckedShardedImatrixStream(ShardedQuantizedStream):
     """Experimental shard writer using the verified weighted stream.
 
-    Publication and inference remain outside this class. Only a single pinned
-    source is supported until multi-source matrix provenance is qualified.
+    Publication and inference remain outside this class. A split source is bound
+    by the identity of its ordered file set (hfqa.source_identity).
     """
     def __init__(self, remote, descriptor, quant, quantizer, matrix_path, evidence, calibration,
                  should_stop=None, target_shard_bytes=DEFAULT_SHARD_BYTES):
-        if descriptor.get('sources'):
-            raise ValueError('matrix stream currently requires one pinned source')
         self._matrix_args = (matrix_path, evidence, calibration)
         super().__init__(remote, descriptor, quant, quantizer, should_stop, target_shard_bytes)
 

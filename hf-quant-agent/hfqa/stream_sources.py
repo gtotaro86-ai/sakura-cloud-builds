@@ -27,7 +27,7 @@ def _header_precision(descriptor: dict) -> str | None:
     return {'BF16': 'bf16', 'F16': 'f16', 'Q8_0': 'q8_0'}.get(dominant)
 
 
-def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str | None = None, classify=None) -> dict:
+def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str | None = None, classify=None, only_precision: str | None = None) -> dict:
     if component not in {None, 'image_transformer'}:
         raise ValueError('unsupported stream component')
     classify = classify or _header_precision
@@ -72,6 +72,14 @@ def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str
         if [f['split_index'] for f in files]!=list(range(1,expected+1)):continue
         valid.append((name,files))
     if not valid:raise ValueError('no complete verified Q8_0/F16/BF16 GGUF source set found')
+    if only_precision is not None:
+        wanted=('bf16','f16','q8_0').index(only_precision)
+        def kind(name):
+            if name in forced:return ('bf16','f16','q8_0').index(forced[name])
+            lowered=name.lower()
+            return 0 if 'bf16' in lowered else 1 if re.search(r'(?:^|[-_.])f16(?:[-_.]|$)',lowered) else 2
+        valid=[item for item in valid if kind(item[0])==wanted]
+        if not valid:raise ValueError('no complete verified %s GGUF source set found'%only_precision.upper())
     # Own quants should come from the highest precision available: BF16, then F16, then (already quantized) Q8_0.
     def precision(name):
         if name in forced:return ('bf16','f16','q8_0').index(forced[name])

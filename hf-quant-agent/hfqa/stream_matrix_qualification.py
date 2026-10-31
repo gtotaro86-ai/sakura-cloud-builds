@@ -36,11 +36,20 @@ def validate_native(native, inference):
 
 
 def validate_fixture(manifest, source, evidence, quant):
-    """Validate only the exact source, tools and options exercised on GitHub."""
+    """The original, narrowest policy: only the exact source that was qualified (kept for the proofs that were made with it)."""
     if not isinstance(manifest, dict) or not isinstance(source, dict):
         raise ValueError('invalid stream qualification input')
     if any(source.get(k) != v for k, v in SOURCE.items()):
         raise ValueError('source is not the qualified Qwen fixture')
+    return validate_stream_request(manifest, source, evidence, quant)
+
+
+def validate_stream_request(manifest, source, evidence, quant):
+    """Validate the tools and options exercised on GitHub for ANY pinned source: runtime commit, preset, calibration text and the matrix evidence bound to
+    this very source. Which model it is does not matter here; whether the output has the types the stock quantizer assigns is checked on Oracle from the
+    output's own headers (`hfqa.quant_plan`)."""
+    if not isinstance(manifest, dict) or not isinstance(source, dict):
+        raise ValueError('invalid stream qualification input')
     if manifest.get('runtime_revision') != EXPERIMENTAL_LLAMA_REVISION or quant not in EXPERIMENTAL_PRESETS:
         raise ValueError('runtime or quant is not qualified by this proof')
     spec = manifest.get('imatrix') or {}

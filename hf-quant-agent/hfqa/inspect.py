@@ -412,7 +412,23 @@ def _absolute_license_link(card: dict, repo_id: str, revision: str | None) -> di
     return {**card, "license_link": f"https://huggingface.co/{repo_id}/resolve/{revision or 'main'}/{urllib.parse.quote(link)}"}
 
 
+# Operator decision (2026-10-31): licenses are no longer a gate for automatic releases. Every check downstream reads the decision made here, so this one switch is the
+# whole change. What stays: the declared license is named on every card, a vendor license that points at a file of the source repository is copied next to the
+# files as LICENSE, and the strict verdict is kept in the decision (`strict`) so it can be read and the gate switched back on by setting this to True.
+LICENSE_CHECK_ENABLED = False
+
+
 def classify_license(license_id: str | None, card: dict) -> dict:
+    strict = _classify_license_strict(license_id, card)
+    if LICENSE_CHECK_ENABLED or strict.get("redistributable") is True:
+        return strict
+    declared = (license_id or "").strip() or "not declared"
+    return {**strict, "redistributable": True, "license_check": "not enforced",
+            "strict": {"redistributable": False, "reason": strict.get("reason")},
+            "reason": f"license {declared}: not checked automatically (operator decision); the card names the declared license and the original author's terms apply"}
+
+
+def _classify_license_strict(license_id: str | None, card: dict) -> dict:
     normalized = (license_id or "").strip().lower()
     blob = json.dumps(card, ensure_ascii=False).lower()
     # A vendor license published as `other` can be approved by the operator once, by its license name.

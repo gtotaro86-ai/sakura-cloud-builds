@@ -37,6 +37,23 @@ def validate_matrix_provenance(evidence, *, source, calibration, runtime_revisio
         raise ValueError('matrix contains no verified calibration data')
     # The result is what a receipt carries and what the Oracle gate checks again, so it must pass this very function a second time:
     # `source_sha256_verified` is part of it (it was verified above, otherwise nothing is returned).
-    return {**{key: evidence[key] for key in ('source_sha256', 'matrix_sha256', 'dataset_sha256', 'dataset_id',
-                                              'context', 'runtime_revision', 'tool_sha256', 'entries', 'chunks_processed')},
-            'source_sha256_verified': True}
+    checked = {**{key: evidence[key] for key in ('source_sha256', 'matrix_sha256', 'dataset_sha256', 'dataset_id',
+                                                 'context', 'runtime_revision', 'tool_sha256', 'entries', 'chunks_processed')},
+               'source_sha256_verified': True}
+    if evidence.get('calibration_basis') is not None:
+        checked['calibration_basis'] = validate_basis(evidence['calibration_basis'])
+    return checked
+
+
+def validate_basis(basis):
+    """Which files the matrix was calibrated on: the pinned source itself, or the Q8_0 set of the same repository revision (with the same tensors)."""
+    if not isinstance(basis, dict) or basis.get('kind') not in {'source', 'q8_0_sibling'}:
+        raise ValueError('invalid matrix calibration basis')
+    if basis['kind'] == 'q8_0_sibling':
+        files = basis.get('files')
+        if (not isinstance(files, list) or not 1 <= len(files) <= 1024 or not HEX64.fullmatch(str(basis.get('tensor_name_set_sha256', '')))
+                or any(not isinstance(item, dict) or not HEX64.fullmatch(str(item.get('sha256', ''))) or type(item.get('size')) is not int for item in files)):
+            raise ValueError('the Q8_0 calibration basis needs its files with hashes and the tensor-name-set hash')
+        return {'kind': 'q8_0_sibling', 'tensor_name_set_sha256': basis['tensor_name_set_sha256'],
+                'files': [{key: item.get(key) for key in ('filename', 'size', 'sha256')} for item in files]}
+    return {'kind': 'source'}

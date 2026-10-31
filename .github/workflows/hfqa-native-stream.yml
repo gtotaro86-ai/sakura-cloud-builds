@@ -166,14 +166,90 @@ jobs:
             ${{ runner.temp }}/hfqa-bridge/build-receipt.json
           if-no-files-found: warn
           retention-days: 30
-  release_matrix:
-    # Weighted (imatrix) stream release for the one qualified fixture: unchanged upstream commit built here, matrix made from the pinned source,
-    # shards streamed, tested and staged on a branch (never main). The Hub token exists only in the last step; the worker refuses anything but the
-    # exact qualified bytes before it touches the token (hfqa.stream_matrix_qualification).
+  matrix_prepare:
+    # ONE importance matrix for the whole weighted stream release (any model the manifest pins, split sources included). Runs before the quant jobs and hands
+    # matrix and evidence over as an artifact. No secrets: the files come from public pinned revisions and nothing is uploaded to the Hub.
     needs: plan
     if: github.event.repository.private == false && inputs.mode == 'release_matrix'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 350
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      HFQA_MANIFEST_JSON: ${{ inputs.manifest_json }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Free disk space and record the machine (measured, not assumed)
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h / /mnt | cat; nproc; free -g | head -2
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          echo "after:"; df -h / /mnt | cat
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ fromJSON(inputs.manifest_json).runtime_revision }}
+          path: llama-source
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Build the unchanged pinned imatrix tool (no secrets)
+        run: |
+          set -euo pipefail
+          revision=$(python3 -c "import json,os; print(json.loads(os.environ['HFQA_MANIFEST_JSON'])['runtime_revision'])")
+          test "$(git -C llama-source rev-parse HEAD)" = "$revision"
+          cmake -S llama-source -B "$RUNNER_TEMP/llama-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_COMMIT="$revision"
+          cmake --build "$RUNNER_TEMP/llama-build" -j 2 --target llama-imatrix
+      - name: Dependencies and the manifest (no secrets)
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/env"
+          "$RUNNER_TEMP/env/bin/pip" install numpy==2.2.6 huggingface_hub==2.3.0 hf-xet==1.7.0
+          python3 - <<'PY'
+          import os, pathlib
+          raw = os.environ['HFQA_MANIFEST_JSON']
+          if not raw.strip() or len(raw) > 100000:
+              raise SystemExit('release_matrix needs an explicit manifest within the input budget')
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'hfqa-request.json').write_text(raw, encoding='utf-8')
+          PY
+      - name: Make the importance matrix from the pinned calibration files (no secrets)
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/llama-build/bin"
+          "$RUNNER_TEMP/env/bin/python" scripts/make_stream_matrix.py --manifest "$RUNNER_TEMP/hfqa-request.json" \
+            --imatrix-tool "$RUNNER_TEMP/llama-build/bin/llama-imatrix" --work "$RUNNER_TEMP/matrix"
+          df -h / | cat
+      - name: Hand matrix and evidence to the quant jobs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hfqa-matrix-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/matrix/importance.dat
+            ${{ runner.temp }}/matrix/matrix-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain the tool logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hfqa-matrix-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/matrix/logs/*.log
+          if-no-files-found: warn
+          retention-days: 14
+  release_matrix:
+    # Weighted (imatrix) stream release: unchanged upstream commit built here, the matrix from matrix_prepare, shards streamed, tested and staged on a branch
+    # (never main). The Hub token exists only in the last step; the worker checks the pinned runtime, tools and matrix evidence before it touches the token
+    # (hfqa.stream_matrix_qualification), and Oracle compares the staged files' tensor types with the stock quantizer's plan (hfqa.quant_plan).
+    needs: [plan, matrix_prepare]
+    if: github.event.repository.private == false && inputs.mode == 'release_matrix'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -204,41 +280,26 @@ jobs:
           test "$(git -C llama-source rev-parse HEAD)" = "$revision"
           cmake -S llama-source -B "$RUNNER_TEMP/llama-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_COMMIT="$revision"
           cmake --build "$RUNNER_TEMP/llama-build" -j 2 --target llama-imatrix llama-quantize llama-completion
-      - name: Dependencies, project adapter and the pinned calibration source (no secrets)
+      - name: Dependencies and project adapter (no secrets)
         working-directory: hf-quant-agent
         run: |
           set -euo pipefail
           python -m venv "$RUNNER_TEMP/env"
           "$RUNNER_TEMP/env/bin/pip" install numpy==2.2.6 huggingface_hub==2.3.0 hf-xet==1.7.0
           python3 - <<'PY'
-          import json, os, pathlib
-          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          import os, pathlib
           raw = os.environ['HFQA_MANIFEST_JSON']
           if not raw.strip() or len(raw) > 100000:
               raise SystemExit('release_matrix needs an explicit manifest within the input budget')
-          (root / 'hfqa-request.json').write_text(raw, encoding='utf-8')
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'hfqa-request.json').write_text(raw, encoding='utf-8')
           PY
           revision=$(python3 -c "import json,os; print(json.loads(os.environ['HFQA_MANIFEST_JSON'])['runtime_revision'])")
           "$RUNNER_TEMP/env/bin/python" scripts/build_stream_bridge.py --runtime "$RUNNER_TEMP/llama-build/bin" --destination "$RUNNER_TEMP/bridge" --revision "$revision"
-          "$RUNNER_TEMP/env/bin/python" - <<'PY'
-          import json, os, pathlib
-          from huggingface_hub import hf_hub_download
-          root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          manifest = json.loads((root / 'hfqa-request.json').read_text(encoding='utf-8'))
-          sources = manifest['sources']
-          if len(sources) != 1:
-              raise SystemExit('the qualified matrix stream takes exactly one source file')
-          item = sources[0]
-          path = hf_hub_download(item['repo_id'], item['filename'], revision=item['revision'], local_dir=str(root / 'calibration-source'), token=False)
-          (root / 'calibration-source-path').write_text(path, encoding='utf-8')
-          PY
-      - name: Make the importance matrix from the pinned source (no secrets)
-        working-directory: hf-quant-agent
-        run: |
-          set -euo pipefail
-          export LD_LIBRARY_PATH="$RUNNER_TEMP/llama-build/bin"
-          "$RUNNER_TEMP/env/bin/python" scripts/prepare_stream_imatrix.py --manifest "$RUNNER_TEMP/hfqa-request.json" \
-            --source "$(cat "$RUNNER_TEMP/calibration-source-path")" --imatrix-tool "$RUNNER_TEMP/llama-build/bin/llama-imatrix" --work "$RUNNER_TEMP/matrix"
+      - name: The importance matrix of this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hfqa-matrix-${{ github.run_id }}
+          path: ${{ runner.temp }}/matrix
       - name: Quantize with the matrix, verify, run a real inference, then stage on a branch (never main)
         working-directory: hf-quant-agent
         env:
@@ -246,13 +307,12 @@ jobs:
         run: |
           set -euo pipefail
           export LD_LIBRARY_PATH="$RUNNER_TEMP/llama-build/bin"
-          matrix_file=$(python3 -c "import json,sys; print(json.load(open('$RUNNER_TEMP/matrix/prepare-result.json'))['matrix'])")
           "$RUNNER_TEMP/env/bin/python" scripts/run_release_worker.py \
             --manifest "$RUNNER_TEMP/hfqa-request.json" --quant "${{ matrix.quant }}" \
             --bridge "$RUNNER_TEMP/bridge/libhfqa_plan.so" --ggml "$RUNNER_TEMP/llama-build/bin/libggml-base.so" \
             --llama-cli "$RUNNER_TEMP/llama-build/bin/llama-completion" --work "$RUNNER_TEMP/hfqa-release" \
             --job-id "${{ inputs.job_id }}" --branch "hfqa-staging-${{ inputs.job_id }}" --upload \
-            --qualified-stream-matrix --experimental-matrix "$matrix_file" --experimental-matrix-evidence "$RUNNER_TEMP/matrix/matrix-evidence.json"
+            --qualified-stream-matrix --experimental-matrix "$RUNNER_TEMP/matrix/importance.dat" --experimental-matrix-evidence "$RUNNER_TEMP/matrix/matrix-evidence.json"
       - name: Retain the receipt and the real inference logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -216,8 +216,9 @@ def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, lla
     if qualified_matrix:
         if experimental_matrix is None or not isinstance(experimental_matrix, dict):
             raise ValueError('a qualified matrix stream needs a matrix and its evidence')
-        from hfqa.stream_matrix_qualification import validate_fixture
-        validate_fixture(manifest, source, experimental_matrix.get('evidence'), quant)  # before any download, native load or upload
+        from hfqa.stream_matrix_qualification import validate_stream_request
+        from hfqa.source_identity import identity
+        validate_stream_request(manifest, identity(source), experimental_matrix.get('evidence'), quant)  # before any download, native load or upload
     t0 = time.monotonic()
     facts = runner_facts(work)
     native = NativeQuantizer(bridge, ggml, manifest['runtime_revision'])
