@@ -23,6 +23,7 @@ from hfqa.streaming import shard_filename
 SMALL_SOURCE_BYTES = 8 * 10 ** 9        # the established path: matrix with one chunk per pass, perplexity/KL measurement of every quant
 MAX_SOURCE_BYTES = 45 * 10 ** 9         # source plus one output must fit the ~108 GB the runner has free after cleaning (measured: 36.8 GB left with a 77.5 GB source)
 CONTEXT = 128
+QUALITY_MAX_SOURCE_BYTES = 20 * 10 ** 9  # larger sources keep no outputs for the deviation measurement (disk, and CPU time grows with the model)
 PACKED_BATCH = 2048                     # larger sources: the same calibration text, 16 chunks per decode, so the weights are read once (0.5B: identical matrix to the last digit)
 IMATRIX_TIMEOUT_S = 40 * 60
 LARGE_IMATRIX_TIMEOUT_S = 120 * 60      # measured on the free runner: 14B Q8_0 351 s, 72B Q8_0 1617 s; the job allows 350 minutes
@@ -143,6 +144,8 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
                  'tensor_type_histogram': report.get('tensor_type_histogram')}
     plain = isinstance(manifest.get('plain'), dict)
     large = descriptor['size'] > SMALL_SOURCE_BYTES
+    measure_large = bool(large and manifest.get('quality') and descriptor['size'] <= QUALITY_MAX_SOURCE_BYTES)
+    free_outputs = large and not measure_large
     matrix = None if plain else make_matrix(source_path, tools, work, cpus, large=large, log=log)
     if matrix is not None and (manifest.get('imatrix') or {}).get('provenance_v1') is True:
         from hfqa.imatrix_provenance import validate_matrix_provenance
@@ -198,13 +201,13 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
             'timings_seconds': {'matrix': round(t_matrix - t0, 1), 'quantize': round(q_seconds, 1), 'verify_and_infer': round(t2 - t1 - q_seconds, 1), 'upload': round(t3 - t2, 1)},
             'note': ('Stock llama-quantize without an importance matrix; ' if plain else 'Stock llama-quantize with an importance matrix from fixed calibration text; ') + 'one smoke prompt; no quality benchmark is claimed.',
         }
-        if large and staging:
+        if free_outputs and staging:
             out.unlink(missing_ok=True)  # source and one output share the disk; the next quant needs the room (the Hub holds the verified copy)
         else:
             outputs[quant] = out
         log(json.dumps({'event': 'quant_done', 'quant': quant, 'bytes': item['size']}), flush=True)
     # How far each quant is from the source on a fixed, different text (perplexity, KL divergence, top-token agreement); a failure here is a note, never a failed release.
-    if manifest.get('quality') and large:
+    if manifest.get('quality') and free_outputs:
         quality = {'skipped': 'the source is too large for the quality measurement on the runner'}
     elif manifest.get('quality'):
         quality = measure(source_path, outputs, perplexity, work, cpus, descriptor['size'], log=log) if perplexity.is_file() else {'skipped': 'llama-perplexity is not part of the stock runtime'}

@@ -36,7 +36,7 @@ class Unavailable(RuntimeError):
 
 def chunks_for(source_bytes: int) -> int:
     """How many context windows to score: all of the text for small models, fewer for larger ones (CPU time grows with the model)."""
-    return 64 if source_bytes <= 4 * 10 ** 9 else 12
+    return 64 if source_bytes <= 4 * 10 ** 9 else 12 if source_bytes <= 8 * 10 ** 9 else 4  # above 8 GB: four windows keep every pass within its time limit
 
 
 def fetch_text(spec: dict, download=None) -> str:
