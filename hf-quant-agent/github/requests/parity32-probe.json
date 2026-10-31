@@ -1,0 +1,29 @@
+{
+ "preset": "Q4_K_M",
+ "sources": [
+  {
+   "repo_id": "bartowski/Qwen_Qwen3-32B-GGUF",
+   "revision": "533fbb1ae5f2ce96c9171acc169e1f68f9352eca",
+   "filename": "Qwen_Qwen3-32B-bf16/Qwen_Qwen3-32B-bf16-00001-of-00002.gguf",
+   "size": 39857436928,
+   "sha256": "4120eafd5b86ca7e6d14bd6678dd4d1e7c5b9482b131cb4c8b156b44b9244f67",
+   "split_index": 1,
+   "split_count": 2
+  },
+  {
+   "repo_id": "bartowski/Qwen_Qwen3-32B-GGUF",
+   "revision": "533fbb1ae5f2ce96c9171acc169e1f68f9352eca",
+   "filename": "Qwen_Qwen3-32B-bf16/Qwen_Qwen3-32B-bf16-00002-of-00002.gguf",
+   "size": 25674138656,
+   "sha256": "c1dc996dde074937b60cf9d1a3133322b049fe7361b12f35b18ee297d7d3ea9f",
+   "split_index": 2,
+   "split_count": 2
+  }
+ ],
+ "target": {
+  "repo_id": "webmp3/hfqa-stream-matrix-test",
+  "revision": "bd5d7a9c6314ac57e241d5d42e40f90fc99d411e",
+  "filename": "Sakura-Qwen3-32B-Q4_K_M.gguf",
+  "size": 19762149536
+ }
+}
