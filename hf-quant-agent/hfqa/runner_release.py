@@ -204,21 +204,56 @@ def stage_on_branch(api, repo_id: str, branch: str, files: list[dict], *, privat
 
 
 def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, llama_cli, work: Path, job_id: str,
-                  api=None, branch: str | None = None, env: dict | None = None, log=print) -> dict:
-    """Run the whole runner step for one quant and return the receipt (nothing is written to `main`)."""
+                  api=None, branch: str | None = None, env: dict | None = None, log=print, experimental_matrix=None,
+                  qualified_matrix: bool = False) -> dict:
+    """Run the whole runner step for one quant and return the receipt (nothing is written to `main`).
+
+    `qualified_matrix` is the one case in which a weighted (imatrix) stream may be staged: the exact source, quant, calibration, runtime commit, library,
+    bridge, imatrix and test-tool bytes that were qualified in `hfqa.stream_matrix_qualification`. Anything else stays a no-upload experiment.
+    """
+    if experimental_matrix is not None and api is not None and not qualified_matrix:
+        raise ValueError('experimental matrix streaming is not qualified for staging')
+    if qualified_matrix:
+        if experimental_matrix is None or not isinstance(experimental_matrix, dict):
+            raise ValueError('a qualified matrix stream needs a matrix and its evidence')
+        from hfqa.stream_matrix_qualification import validate_fixture
+        validate_fixture(manifest, source, experimental_matrix.get('evidence'), quant)  # before any download, native load or upload
     t0 = time.monotonic()
     facts = runner_facts(work)
     native = NativeQuantizer(bridge, ggml, manifest['runtime_revision'])
+    if qualified_matrix:
+        from hfqa.stream_matrix_qualification import NATIVE_PINS
+        if any(native.identity.get(key) != value for key, value in NATIVE_PINS.items()):
+            raise ValueError('the loaded bridge or library differs from the qualified build; nothing is staged')
     remote = open_source(source)
     structure = source_structure(remote)
     stem = manifest.get('output_stem') or Path(source['filename']).stem
-    stream = ShardedQuantizedStream(remote, source, quant, native, target_shard_bytes=int(manifest.get('target_shard_bytes') or DEFAULT_SHARD_BYTES))
+    if experimental_matrix is not None:
+        # The production import gate does not yet accept weighted streaming
+        # receipts. Never stage an output until that gate is qualified.
+        if not isinstance(experimental_matrix, dict) or (manifest.get('imatrix') or {}).get('method') != 'stream_imatrix':
+            raise ValueError('experimental matrix stream requires a pinned stream manifest')
+        from hfqa.stream_imatrix import ProvenanceCheckedShardedImatrixStream
+        spec = manifest['imatrix']
+        stream = ProvenanceCheckedShardedImatrixStream(remote, source, quant, native,
+            experimental_matrix['path'], experimental_matrix['evidence'],
+            {'id': spec.get('dataset_id'), 'sha256': spec.get('dataset_sha256'), 'context': spec.get('context')},
+            target_shard_bytes=int(manifest.get('target_shard_bytes') or DEFAULT_SHARD_BYTES))
+    else:
+        if (manifest.get('imatrix') or {}).get('method') == 'stream_imatrix':
+            raise ValueError('requested matrix stream has no validated matrix')
+        stream = ShardedQuantizedStream(remote, source, quant, native, target_shard_bytes=int(manifest.get('target_shard_bytes') or DEFAULT_SHARD_BYTES))
     log(json.dumps({'event': 'plan', 'quant': quant, 'planned_bytes': stream.size, 'shards': len(stream.shards), 'runner': facts}), flush=True)
     t1 = time.monotonic()
     files = materialize(stream, work / quant, stem, log=log)
     t2 = time.monotonic()
     shard_reports = verify_shards(files, structure, structure['tensor_count'])
     inference = run_inference(Path(llama_cli), files, work / quant / 'logs', facts['cpus'] or 1, facts.get('memory_total_bytes'), remaining_job_seconds(t0))
+    native_identity = dict(native.identity)
+    if qualified_matrix:
+        from hfqa.stream_matrix_qualification import validate_native
+        native_identity['imatrix_tool_sha256'] = experimental_matrix['evidence'].get('tool_sha256')
+        validate_native(native_identity, inference)  # the test tool must be the qualified one before the shards leave the machine
     t3 = time.monotonic()
     staging = None
     if api is not None:
@@ -228,7 +263,7 @@ def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, lla
     receipt = {
         'schema': SCHEMA, 'job_id': job_id, 'quant': quant, 'state': 'RUNNER_VALIDATED' + ('_STAGED' if staging else ''),
         'runner': {**facts, **(env or {})},
-        'native_identity': native.identity,
+        'native_identity': native_identity,
         'source': {'descriptors': source.get('sources') or [source], 'structure': structure,
                    'source_sha256_verified': True, 'concatenated_source_sha256': (stream.receipt or {}).get('concatenated_source_sha256'),
                    'source_materialized': False},
@@ -242,4 +277,7 @@ def release_quant(manifest: dict, source: dict, quant: str, *, bridge, ggml, lla
         'timings_seconds': {'plan': round(t1 - t0, 1), 'quantize_and_write': round(t2 - t1, 1), 'verify_and_infer': round(t3 - t2, 1), 'upload': round(t4 - t3, 1)},
         'note': 'One smoke prompt on the exact shards; no quality benchmark is claimed.',
     }
+    if experimental_matrix is not None:
+        receipt.update(method='stream_imatrix' if qualified_matrix else 'experimental_stream_imatrix',
+                       imatrix_provenance=stream.receipt['imatrix_provenance'], experimental=not qualified_matrix)
     return receipt

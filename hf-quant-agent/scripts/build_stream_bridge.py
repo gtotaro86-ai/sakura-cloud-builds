@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse, hashlib, json, re, subprocess, urllib.request
 REVISION='620d2225cc436ab0b001e3200e590e3b286ef9ab'
 
-def build(runtime, destination, cpp, revision=REVISION):
+def build(runtime, destination, cpp, revision=REVISION, rpath_directory=None):
     if not re.fullmatch('[a-f0-9]{40}',revision):raise ValueError('runtime revision must be a full commit SHA')
     runtime=Path(runtime).resolve();destination=Path(destination).resolve();cpp=Path(cpp).resolve()
     if not (runtime/'libllama.so').is_file():raise ValueError('stock Linux runtime library missing')
@@ -24,8 +24,12 @@ def build(runtime, destination, cpp, revision=REVISION):
             todo.append(prefix+dependency)
         if len(seen)>100:raise ValueError('upstream include closure exceeds build budget')
     output=destination/'libhfqa_plan.so'
-    subprocess.run(['g++','-std=c++17','-O2','-shared','-fPIC',str(cpp),'-I'+str(headers/'include'),'-I'+str(headers/'src'),'-I'+str(headers/'ggml/include'),'-L'+str(runtime),'-Wl,-rpath,'+str(runtime),'-lllama','-lggml','-lggml-base','-o',str(output)],check=True,timeout=180)
-    proof={'runtime_revision':revision,'runtime_patched':False,'headers':seen,'bridge_sha256':hashlib.sha256(output.read_bytes()).hexdigest()}
+    runpath=Path(rpath_directory).resolve() if rpath_directory else runtime
+    subprocess.run(['g++','-std=c++17','-O2','-shared','-fPIC',str(cpp),'-I'+str(headers/'include'),'-I'+str(headers/'src'),'-I'+str(headers/'ggml/include'),'-L'+str(runtime),'-Wl,-rpath,'+str(runpath),'-lllama','-lggml','-lggml-base','-o',str(output)],check=True,timeout=180)
+    dynamic=subprocess.run(['readelf','-d',str(output)],capture_output=True,text=True,check=True,timeout=15).stdout
+    if not any(line.strip().startswith(('0x000000000000001d (RUNPATH)','0x000000000000000f (RPATH)')) and str(runpath) in line for line in dynamic.splitlines()):
+        raise RuntimeError('bridge RUNPATH does not identify the immutable selected runtime directory')
+    proof={'runtime_revision':revision,'runtime_patched':False,'bridge_runpath':str(runpath),'headers':seen,'bridge_sha256':hashlib.sha256(output.read_bytes()).hexdigest()}
     (destination/'build-receipt.json').write_text(json.dumps(proof,indent=2))
     print(json.dumps({'bridge':str(output),'upstream_headers':len(seen),'runtime_patched':False}))
     return output
@@ -35,9 +39,13 @@ if __name__=='__main__':
     p.add_argument('--runtime',required=True);p.add_argument('--destination',required=True)
     p.add_argument('--cpp',default=str(Path(__file__).resolve().parents[1]/'github/native/generic_quant_bridge.cpp'))
     p.add_argument('--manifest',help='build against the runtime revision this manifest pins (default: the baseline)')
+    p.add_argument('--revision',help='full source revision for an explicit experimental build')
+    p.add_argument('--rpath-directory',help='absolute immutable directory where this bridge will be installed')
     a=p.parse_args();revision=REVISION
+    if a.manifest and a.revision:raise ValueError('choose manifest or revision, not both')
+    if a.revision:revision=a.revision
     if a.manifest:
         import sys;sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
         from hfqa import runtimes
         revision=runtimes.descriptor_for_manifest(json.loads(Path(a.manifest).read_text(encoding='utf-8-sig')))['revision']
-    build(a.runtime,a.destination,a.cpp,revision)
+    build(a.runtime,a.destination,a.cpp,revision,a.rpath_directory)

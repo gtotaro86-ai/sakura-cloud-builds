@@ -21,6 +21,28 @@ def run(args) -> dict:
     manifest, source = read_manifest(args.manifest)
     if args.quant not in manifest['quants']:
         raise ValueError('requested quant is not part of the pinned manifest')
+    matrix_path = getattr(args, 'experimental_matrix', None)
+    evidence_path = getattr(args, 'experimental_matrix_evidence', None)
+    experimental = (manifest.get('imatrix') or {}).get('method') == 'stream_imatrix'
+    if bool(matrix_path) != bool(evidence_path) or experimental != bool(matrix_path):
+        raise ValueError('experimental matrix stream requires both matrix and evidence with an explicit stream manifest')
+    matrix_input = None
+    qualified = bool(getattr(args, 'qualified_stream_matrix', False))
+    if qualified and not experimental:
+        raise ValueError('a qualified matrix stream needs the explicit stream manifest with matrix and evidence')
+    if experimental:
+        if args.upload and not qualified:
+            raise ValueError('experimental matrix streaming is not qualified for staging')
+        evidence_path = Path(evidence_path)
+        if evidence_path.stat().st_size > 64 * 1024:
+            raise ValueError('matrix evidence exceeds the size budget')
+        evidence = json.loads(evidence_path.read_text(encoding='utf-8'))
+        if not isinstance(evidence, dict):
+            raise ValueError('matrix evidence must be an object')
+        matrix_input = {'path': Path(matrix_path), 'evidence': evidence}
+        if qualified:
+            from hfqa.stream_matrix_qualification import validate_fixture
+            validate_fixture(manifest, source, evidence, args.quant)  # refuse before the Hub token is touched
     api = None
     if args.upload:
         if (manifest.get('source_license') or {}).get('redistributable') is not True:
@@ -41,7 +63,8 @@ def run(args) -> dict:
     work = Path(args.work)
     env = {k: os.environ[k] for k in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA', 'GITHUB_REPOSITORY', 'RUNNER_NAME', 'RUNNER_OS', 'RUNNER_ARCH') if k in os.environ}
     receipt = release_quant(manifest, source, args.quant, bridge=args.bridge, ggml=args.ggml, llama_cli=args.llama_cli, work=work,
-                            job_id=args.job_id, api=api, branch=args.branch, env=env)
+                            job_id=args.job_id, api=api, branch=args.branch, env=env,
+                            **({'experimental_matrix': matrix_input, 'qualified_matrix': qualified} if matrix_input is not None else {}))
     receipt['manifest_sha256'] = __import__('hashlib').sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     receipts = work / 'receipts'
     receipts.mkdir(parents=True, exist_ok=True)
@@ -64,6 +87,10 @@ def main() -> None:
     parser.add_argument('--branch', help='staging branch name; default hfqa-staging-<job>')
     parser.add_argument('--upload', action='store_true', help='stage the validated shards on the Hub (needs HF_TOKEN)')
     parser.add_argument('--keep-shards', action='store_true')
+    parser.add_argument('--experimental-matrix', type=Path, help='local verified matrix for an isolated no-upload proof')
+    parser.add_argument('--experimental-matrix-evidence', type=Path, help='JSON provenance for the experimental matrix')
+    parser.add_argument('--qualified-stream-matrix', action='store_true',
+                        help='allow staging for the one qualified matrix-stream fixture (exact source, quant, runtime bytes); everything else is refused')
     args = parser.parse_args()
     try:
         receipt = run(args)

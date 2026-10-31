@@ -29,10 +29,17 @@ def find_own_bf16_repo(repo_id: str, revision: str | None, timeout: float = 20) 
     if not revision:
         return None
     from hfqa.stream_controller import output_stem
-    candidate = f"webmp3/{output_stem({'repo_id': repo_id})}-BF16-GGUF"
-    try:
-        info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(candidate)}", timeout)
-    except InspectError:
+    stem = output_stem({'repo_id': repo_id})
+    legacy = stem[len('Sakura-'):] if stem.startswith('Sakura-') else stem  # conversions made before the brand name led the repository names
+    info = candidate = None
+    for name in dict.fromkeys([stem, legacy]):
+        candidate = f"webmp3/{name}-BF16-GGUF"
+        try:
+            info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(candidate)}", timeout)
+            break
+        except InspectError:
+            continue
+    if info is None:
         return None
     card = info.get("cardData") or {}
     files = [item.get("rfilename") for item in info.get("siblings") or [] if str(item.get("rfilename")).endswith(".gguf")]

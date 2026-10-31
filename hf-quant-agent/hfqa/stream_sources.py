@@ -79,6 +79,8 @@ def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str
         return 0 if 'bf16' in lowered else 1 if re.search(r'(?:^|[-_.])f16(?:[-_.]|$)',lowered) else 2
     valid.sort(key=lambda item:(precision(item[0]),sum(f['size'] for f in item[1]),item[0]))
     name,files=valid[0]
+    from hfqa.vision_projector import discover as discover_projectors
     return {'repo_id':repo,'revision':revision.lower(),'sources':files,'total_source_bytes':sum(f['size'] for f in files),
             'source_set':name,'source_precision':('bf16','f16','q8_0')[precision(name)],'weights_downloaded_on_oracle':False,
+            'vision_projector':discover_projectors(repo,revision,info),
             'license_decision':native.get('license_decision') or analysis.get('license_decision')}

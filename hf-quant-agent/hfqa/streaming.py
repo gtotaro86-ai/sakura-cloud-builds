@@ -169,7 +169,7 @@ class NativeQuantizer:
                 raise ValueError('native type plan depends on the feed-forward width, which this model does not declare; refusing to guess')
         return {_field(t, 'name'): types[i] for i, t in enumerate(tensors)}
 
-    def quantize_rows(self, raw, input_type, output_type, cols):
+    def quantize_rows(self, raw, input_type, output_type, cols, weights=None):
         import numpy as np
         if input_type not in SOURCE_TYPES or output_type not in LAYOUTS:
             raise ValueError('unqualified source or output tensor type')
@@ -183,6 +183,10 @@ class NativeQuantizer:
         rows = len(raw) // (cols // block * width)
         if rows * cols * 4 > ROW_WORK_BYTES:
             raise ValueError('dequantized chunk exceeds the bounded native workspace')
+        if weights is not None:
+            weights = np.ascontiguousarray(weights, dtype=np.float32)
+            if weights.ndim != 1 or len(weights) != cols or not np.isfinite(weights).all() or (weights < 0).any():
+                raise ValueError('importance weights do not match tensor row')
         if input_type == output_type:
             result = np.frombuffer(raw, dtype=np.uint8)
         else:
@@ -203,7 +207,8 @@ class NativeQuantizer:
             if cols % out_block:
                 raise ValueError('native type plan produced an invalid row layout')
             result = np.empty(rows * cols // out_block * out_width, dtype=np.uint8)
-            written = self.lib.ggml_quantize_chunk(output_type, values.ctypes.data, result.ctypes.data, 0, rows, cols, None)
+            written = self.lib.ggml_quantize_chunk(output_type, values.ctypes.data, result.ctypes.data, 0, rows, cols,
+                                                   weights.ctypes.data if weights is not None else None)
             if written != result.size:
                 raise RuntimeError('native quantizer returned an unexpected byte count')
         if not self.lib.ggml_validate_row_data(output_type, result.ctypes.data, result.size):
@@ -300,6 +305,9 @@ class QuantizedStream:
         self.header = _output_header(remote, quant, self.tensors)
         self.size = len(self.header) + offset
 
+    def _quantize_chunk(self, tensor, raw, first_row):
+        return self.quantizer.quantize_rows(raw, tensor['input_type'], tensor['type'], tensor['shape'][0])
+
     def __iter__(self):
         if self.used:
             raise RuntimeError('a quantized stream cannot be reused')
@@ -343,7 +351,7 @@ class QuantizedStream:
                 count = min(rows_per_chunk, rows - start) * input_rowbytes
                 raw = read_source(cursor, count)
                 cursor += count
-                result = self.quantizer.quantize_rows(raw, tensor['input_type'], tensor['type'], cols)
+                result = self._quantize_chunk(tensor, raw, start)
                 output_block, output_width = LAYOUTS[tensor['type']]
                 if len(result) != (count // input_rowbytes) * cols // output_block * output_width:
                     raise RuntimeError('native output chunk byte count differs from global plan')
@@ -411,7 +419,7 @@ class ShardedQuantizedStream:
                  target_shard_bytes=DEFAULT_SHARD_BYTES):
         if type(target_shard_bytes) is not int or not 1024 <= target_shard_bytes <= MAX_SHARD_BYTES:
             raise ValueError('output shard byte limit must be between 1024 and 50000000000')
-        self.base = QuantizedStream(remote, descriptor, quant, quantizer, should_stop)
+        self.base = self._make_base(remote, descriptor, quant, quantizer, should_stop)
         self.used, self.receipt = False, None
         self.quant, self.target_shard_bytes = quant, target_shard_bytes
         # Every shard repeats the bounded metadata so headers remain self
@@ -463,6 +471,9 @@ class ShardedQuantizedStream:
                 raise RuntimeError('output shard plan exceeded its exact byte limit')
             self.shards.append({'index': index, 'header_size': header_size, 'size': size, 'tensors': tensors})
         self.size = sum(item['size'] for item in self.shards)
+
+    def _make_base(self, remote, descriptor, quant, quantizer, should_stop):
+        return QuantizedStream(remote, descriptor, quant, quantizer, should_stop)
 
     def _header_for(self, shard):
         entries = [e for e in self._entries if e[0] not in {'split.no', 'split.count'}]

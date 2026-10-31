@@ -20,10 +20,14 @@ from hfqa import runner_quality
 from hfqa.runner_release import SCHEMA, remaining_job_seconds, run_inference, runner_facts, sha256_file, stage_on_branch
 from hfqa.streaming import shard_filename
 
-MAX_SOURCE_BYTES = 8 * 10 ** 9          # the model must run on the runner's CPU and memory for the calibration
+SMALL_SOURCE_BYTES = 8 * 10 ** 9        # the established path: matrix with one chunk per pass, perplexity/KL measurement of every quant
+MAX_SOURCE_BYTES = 45 * 10 ** 9         # source plus one output must fit the ~108 GB the runner has free after cleaning (measured: 36.8 GB left with a 77.5 GB source)
 CONTEXT = 128
+PACKED_BATCH = 2048                     # larger sources: the same calibration text, 16 chunks per decode, so the weights are read once (0.5B: identical matrix to the last digit)
 IMATRIX_TIMEOUT_S = 40 * 60
+LARGE_IMATRIX_TIMEOUT_S = 120 * 60      # measured on the free runner: 14B Q8_0 351 s, 72B Q8_0 1617 s; the job allows 350 minutes
 QUANTIZE_TIMEOUT_S = 40 * 60
+LARGE_QUANTIZE_TIMEOUT_S = 90 * 60
 METHOD = 'stock_imatrix'
 METHOD_PLAIN = 'stock_quantize'  # the same stock tools without an importance matrix (used for llama.cpp built from source; hfqa/source_builds.py)
 
@@ -98,13 +102,14 @@ def validate_matrix(path: Path) -> dict:
     return {'entries': entries, 'chunks_processed': chunks}
 
 
-def make_matrix(source: Path, tools: dict, work: Path, cpus: int, *, log=print) -> dict:
+def make_matrix(source: Path, tools: dict, work: Path, cpus: int, *, large: bool = False, log=print) -> dict:
     dataset = work / f'{DATASET_ID}.txt'
     dataset.write_bytes(DATASET)
     matrix = work / 'importance.dat'
+    batch = PACKED_BATCH if large else CONTEXT
     command = [str(tools['imatrix']), '-m', str(source), '-f', str(dataset), '-o', str(matrix), '--output-format', 'dat', '--no-ppl',
-               '-t', str(cpus), '-tb', str(cpus), '-c', str(CONTEXT), '-b', str(CONTEXT), '-ub', str(CONTEXT), '-ngl', '0']
-    seconds = run_tool(command, work / 'logs', 'imatrix', IMATRIX_TIMEOUT_S)
+               '-t', str(cpus), '-tb', str(cpus), '-c', str(CONTEXT), '-b', str(batch), '-ub', str(batch), '-ngl', '0']
+    seconds = run_tool(command, work / 'logs', 'imatrix', LARGE_IMATRIX_TIMEOUT_S if large else IMATRIX_TIMEOUT_S)
     parsed = validate_matrix(matrix)
     evidence = {'matrix_sha256': sha256_file(matrix), 'dataset_id': DATASET_ID, 'dataset_license': DATASET_LICENSE, 'dataset_sha256': DATASET_SHA256,
                 'dataset_bytes': len(DATASET), 'context': CONTEXT, 'tool_sha256': sha256_file(tools['imatrix']), 'seconds': seconds,
@@ -137,7 +142,20 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
     structure = {'architecture': report['architecture'], 'tensor_count': report['tensor_count'], 'tensor_name_set_sha256': report['tensor_name_set_sha256'],
                  'tensor_type_histogram': report.get('tensor_type_histogram')}
     plain = isinstance(manifest.get('plain'), dict)
-    matrix = None if plain else make_matrix(source_path, tools, work, cpus, log=log)
+    large = descriptor['size'] > SMALL_SOURCE_BYTES
+    matrix = None if plain else make_matrix(source_path, tools, work, cpus, large=large, log=log)
+    if matrix is not None and (manifest.get('imatrix') or {}).get('provenance_v1') is True:
+        from hfqa.imatrix_provenance import validate_matrix_provenance
+        evidence = matrix['evidence']
+        # Re-hash immediately before calibration evidence is bound to the source.
+        if sha256_file(source_path) != descriptor['sha256']:
+            raise RuntimeError('calibration source differs from the pinned source')
+        evidence.update(source_sha256=descriptor['sha256'], source_sha256_verified=True,
+                        runtime_revision=manifest['runtime_revision'])
+        spec = manifest['imatrix']
+        validate_matrix_provenance(evidence, source=descriptor,
+            calibration={'id': spec.get('dataset_id'), 'sha256': spec.get('dataset_sha256'), 'context': spec.get('context')},
+            runtime_revision=manifest['runtime_revision'])
     t_matrix = time.monotonic()
     stem = manifest.get('output_stem') or Path(descriptor['filename']).stem
     requantize = str(manifest.get('source_precision') or '').lower() == 'q8_0'
@@ -148,7 +166,7 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
         out.parent.mkdir(parents=True, exist_ok=True)
         command = ([str(tools['quantize'])] + ([] if plain else ['--imatrix', str(matrix['path'])]) + (['--allow-requantize'] if requantize else [])
                    + [str(source_path), str(out), quant, str(cpus)])
-        q_seconds = run_tool(command, work / quant / 'logs', 'quantize', QUANTIZE_TIMEOUT_S)
+        q_seconds = run_tool(command, work / quant / 'logs', 'quantize', LARGE_QUANTIZE_TIMEOUT_S if large else QUANTIZE_TIMEOUT_S)
         check = validate_gguf(out, expected_architecture=structure['architecture'])
         if check.get('structure_valid') is not True or check['tensor_count'] != structure['tensor_count'] or check['tensor_name_set_sha256'] != structure['tensor_name_set_sha256']:
             raise RuntimeError(f'{quant}: the quantized file does not hold exactly the source tensors')
@@ -180,10 +198,15 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
             'timings_seconds': {'matrix': round(t_matrix - t0, 1), 'quantize': round(q_seconds, 1), 'verify_and_infer': round(t2 - t1 - q_seconds, 1), 'upload': round(t3 - t2, 1)},
             'note': ('Stock llama-quantize without an importance matrix; ' if plain else 'Stock llama-quantize with an importance matrix from fixed calibration text; ') + 'one smoke prompt; no quality benchmark is claimed.',
         }
-        outputs[quant] = out
+        if large and staging:
+            out.unlink(missing_ok=True)  # source and one output share the disk; the next quant needs the room (the Hub holds the verified copy)
+        else:
+            outputs[quant] = out
         log(json.dumps({'event': 'quant_done', 'quant': quant, 'bytes': item['size']}), flush=True)
     # How far each quant is from the source on a fixed, different text (perplexity, KL divergence, top-token agreement); a failure here is a note, never a failed release.
-    if manifest.get('quality'):
+    if manifest.get('quality') and large:
+        quality = {'skipped': 'the source is too large for the quality measurement on the runner'}
+    elif manifest.get('quality'):
         quality = measure(source_path, outputs, perplexity, work, cpus, descriptor['size'], log=log) if perplexity.is_file() else {'skipped': 'llama-perplexity is not part of the stock runtime'}
     else:
         quality = {'skipped': 'not requested'}
