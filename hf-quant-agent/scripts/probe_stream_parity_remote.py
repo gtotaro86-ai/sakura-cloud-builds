@@ -75,7 +75,7 @@ def main():
     t1 = time.monotonic()
     stock = local_digests(reference)
     target = request['target']
-    streamed = remote_digests({'repo_id': target['repo_id'], 'revision': target['revision'], 'filename': target['filename'], 'size': target['size']}, os.environ.get('HF_TOKEN') or None)
+    streamed = remote_digests({'repo_id': target['repo_id'], 'revision': target['revision'], 'filename': target['filename'], 'size': target['size']}, (os.environ.get('HF_TOKEN') or '').strip() or None)  # the repository secret carries a trailing newline
     different = sorted(name for name in set(stock) & set(streamed) if stock[name] != streamed[name])
     report.update(compare_seconds=round(time.monotonic() - t1, 1), tensors_stock=len(stock), tensors_streamed=len(streamed),
                   only_in_stock=sorted(set(stock) - set(streamed))[:10], only_in_streamed=sorted(set(streamed) - set(stock))[:10],
