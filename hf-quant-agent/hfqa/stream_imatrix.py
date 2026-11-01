@@ -101,7 +101,8 @@ def expert_weight_slices(shape, weights, first_row, nrows):
 # Q5_0, but not these two K presets. This narrow equivalence is revision-bound;
 # it is NOT proof that the whole stream matches llama-quantize.
 EXPERIMENTAL_LLAMA_REVISION = '19ff817fb25e9a1b838b1d7f9f4325f7bf9779c4'
-EXPERIMENTAL_PRESETS = frozenset({'Q4_K_M', 'Q5_K_M'})
+# Q2_K and Q3_K_M were added after a measured value parity with the stock quantizer on five models (two mixture-of-experts, 10 of 10 preset runs identical, probe run 41325988134).
+EXPERIMENTAL_PRESETS = frozenset({'Q2_K', 'Q3_K_M', 'Q4_K_M', 'Q5_K_M'})
 
 
 from hfqa.streaming import DEFAULT_SHARD_BYTES, LAYOUTS, QuantizedStream, ShardedQuantizedStream
