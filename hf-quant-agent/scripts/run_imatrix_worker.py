@@ -38,9 +38,8 @@ def source_build_evidence(manifest: dict, runtime_dir: Path, receipt_path: Path 
 
 def run(args) -> dict:
     manifest, source = read_manifest(args.manifest)
-    from hfqa import source_builds
-    if not isinstance(manifest.get('imatrix'), dict) and not (isinstance(manifest.get('plain'), dict) and source_builds.is_source(manifest.get('runtime'))):
-        raise ValueError('the manifest requests neither the importance-matrix path nor a plain quantization with llama.cpp built from source')
+    if isinstance(manifest.get('imatrix'), dict) == isinstance(manifest.get('plain'), dict):
+        raise ValueError('the manifest must request exactly one of the importance-matrix path and a plain quantization with the stock llama-quantize')
     api = None
     if args.upload:
         if (manifest.get('source_license') or {}).get('redistributable') is not True:
