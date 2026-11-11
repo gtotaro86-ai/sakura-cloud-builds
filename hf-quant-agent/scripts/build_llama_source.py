@@ -73,7 +73,7 @@ def build(manifest: dict, llama: Path, destination: Path, env: dict | None = Non
     shown = probe.stdout + probe.stderr
     if probe.returncode != 0 or chosen['revision'][:9] not in shown:
         raise RuntimeError(f'{source_builds.INFERENCE_TOOL} does not report the commit it was built from (exit {probe.returncode}): {shown[-400:]}')
-    receipt = {'repo': source_builds.REPO, 'head': head, 'binaries': binaries, 'static': True, 'flags': FLAGS, 'version_output': shown.strip()[-400:],
+    receipt = {'repo': chosen['repo'], 'head': head, 'binaries': binaries, 'static': True, 'flags': FLAGS, 'version_output': shown.strip()[-400:],
                'seconds': round(time.monotonic() - started, 1), 'cpus': cpus, 'build_run_id': int((env or os.environ).get('GITHUB_RUN_ID') or 0)}
     (destination / 'build-receipt.json').write_text(json.dumps(receipt, indent=1, sort_keys=True), encoding='utf-8')
     return receipt
@@ -82,7 +82,7 @@ def build(manifest: dict, llama: Path, destination: Path, env: dict | None = Non
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', type=Path, required=True)
-    parser.add_argument('--llama', type=Path, required=True, help='checkout of ggml-org/llama.cpp at the commit named in the manifest')
+    parser.add_argument('--llama', type=Path, required=True, help='checkout of the repository named in the manifest (ggml-org/llama.cpp, or a registered fork) at the commit named there')
     parser.add_argument('--destination', type=Path, required=True)
     args = parser.parse_args()
     raw = args.manifest

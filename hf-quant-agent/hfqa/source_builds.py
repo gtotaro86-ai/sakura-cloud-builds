@@ -28,23 +28,37 @@ def _data() -> Path:
     return Path(os.environ.get('HFQA_DATA', 'data'))
 
 
-def descriptor(revision: str) -> dict:
-    return validate({'kind': KIND, 'repo': REPO, 'revision': revision, 'tag': 'src-' + str(revision)[:9]})
+# A llama.cpp FORK (2026-11-11, hfqa/llama_forks.py): an architecture no official release and no master commit knows yet, whose author names a GitHub repository and branch in the model card.
+# The repository is any public GitHub repository; Oracle (never the runner) chose and registered it for the job, and what protects the Hugging Face key is not the name but the isolation:
+# fork code runs only in a phase and under a user that hold no key (scripts/run_imatrix_worker.py --phase quantize).
+FORK_REPO = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100}')
+
+
+def tag_for(repo: str, revision: str) -> str:
+    return ('src-' if repo == REPO else 'fork-') + str(revision)[:9]
+
+
+def descriptor(revision: str, repo: str = REPO) -> dict:
+    return validate({'kind': KIND, 'repo': repo, 'revision': revision, 'tag': tag_for(repo, revision)})
 
 
 def is_source(value) -> bool:
     return isinstance(value, dict) and value.get('kind') == KIND
 
 
+def is_fork(value) -> bool:
+    return is_source(value) and value.get('repo') != REPO
+
+
 def validate(value) -> dict:
-    """The only fields a runner may act on: this repository, one 40-hex commit and the tag derived from it."""
+    """The only fields a runner may act on: one GitHub repository (ggml-org/llama.cpp, or a fork Oracle registered), one 40-hex commit and the tag derived from both."""
     if not isinstance(value, dict):
         raise ValueError('source build descriptor must be an object')
-    revision = value.get('revision')
-    if not (value.get('kind') == KIND and value.get('repo') == REPO and isinstance(revision, str) and HEX40.fullmatch(revision)
-            and value.get('tag') == 'src-' + revision[:9] and set(value) <= {'kind', 'repo', 'revision', 'tag'}):
-        raise ValueError('not an exact ggml-org/llama.cpp source commit')
-    return {'kind': KIND, 'repo': REPO, 'revision': revision, 'tag': value['tag']}
+    revision, repo = value.get('revision'), value.get('repo')
+    if not (value.get('kind') == KIND and isinstance(repo, str) and (repo == REPO or FORK_REPO.fullmatch(repo)) and isinstance(revision, str) and HEX40.fullmatch(revision)
+            and value.get('tag') == tag_for(repo, revision) and set(value) <= {'kind', 'repo', 'revision', 'tag'}):
+        raise ValueError('not an exact llama.cpp source commit (ggml-org/llama.cpp or a registered fork)')
+    return {'kind': KIND, 'repo': repo, 'revision': revision, 'tag': value['tag']}
 
 
 MAX_FAILED_COMMITS = 3  # per architecture: after that the job waits for an official release
@@ -113,14 +127,19 @@ def _load() -> dict:
         return {}
 
 
+def _key(revision: str, repo: str) -> str:
+    return revision if repo == REPO else repo + '@' + revision   # the master entries keep their old key
+
+
 def register(value: dict, architecture: str, job_id: str) -> dict:
-    """Oracle's own record that it chose this commit for this job (the receipt check accepts nothing else)."""
+    """Oracle's own record that it chose this commit (of this repository) for this job (the receipt check accepts nothing else)."""
     value = validate(value)
     registry = _load()
-    entry = registry.get(value['revision']) or {'registered_at': datetime.now(timezone.utc).isoformat(), 'jobs': []}
+    key = _key(value['revision'], value['repo'])
+    entry = registry.get(key) or {'registered_at': datetime.now(timezone.utc).isoformat(), 'jobs': []}
     entry.update(value, architecture=str(architecture))
     entry['jobs'] = sorted(set(entry.get('jobs') or []) | {str(job_id)})
-    registry[value['revision']] = entry
+    registry[key] = entry
     path = _data() / FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, name = tempfile.mkstemp(prefix='.source-builds-', dir=path.parent)
@@ -130,16 +149,16 @@ def register(value: dict, architecture: str, job_id: str) -> dict:
     return entry
 
 
-def is_registered(revision, job_id: str | None = None) -> bool:
-    entry = _load().get(revision) if isinstance(revision, str) else None
-    return bool(entry) and (job_id is None or str(job_id) in (entry.get('jobs') or []))
+def is_registered(revision, job_id: str | None = None, repo: str = REPO) -> bool:
+    entry = _load().get(_key(revision, repo)) if isinstance(revision, str) and isinstance(repo, str) else None
+    return bool(entry) and entry.get('repo', REPO) == repo and (job_id is None or str(job_id) in (entry.get('jobs') or []))
 
 
 def accepts(manifest: dict, job_id: str) -> bool:
-    """A manifest that names a source build is valid for the importance-matrix path only, and only for a commit Oracle registered for this job."""
+    """A manifest that names a source build is valid for the importance-matrix path only, and only for a commit of that repository Oracle registered for this job."""
     try:
         chosen = validate(manifest.get('runtime'))
     except ValueError:
         return False
     return (manifest.get('runtime_revision') == chosen['revision'] and (isinstance(manifest.get('imatrix'), dict) or isinstance(manifest.get('plain'), dict))
-            and is_registered(chosen['revision'], job_id))
+            and is_registered(chosen['revision'], job_id, chosen['repo']))

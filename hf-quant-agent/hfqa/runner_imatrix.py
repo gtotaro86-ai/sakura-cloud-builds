@@ -44,7 +44,8 @@ def fetch_source(descriptor: dict, directory: Path) -> Path:
 
 
 def _tool_env(tool: Path) -> dict:
-    env = os.environ.copy()
+    from hfqa import safe_env
+    env = safe_env.clean()   # the tools are third-party binaries (a fork, possibly): no secret in their environment
     env['LD_LIBRARY_PATH'] = str(tool.parent) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
     return env
 
@@ -119,14 +120,57 @@ def make_matrix(source: Path, tools: dict, work: Path, cpus: int, *, large: bool
     return {'path': matrix, 'evidence': evidence}
 
 
+def stage_deferred(manifest: dict, source: dict, receipts: dict, *, work: Path, api, branch: str, job_id: str, log=print, stage=stage_on_branch, runner_checks=None) -> dict:
+    """Phase B of a two-phase release (a llama.cpp fork built from source): holds the Hugging Face key and runs ONLY our own code.
+
+    Phase A (run as another user, without the key) produced the files and the receipts. Nothing it computed is trusted except the files themselves: the source and every output are
+    hashed again here, the output must hold exactly the tensors of the source (measured here from the source file), and only then it is staged."""
+    work = Path(work).resolve()
+    descriptor = (source.get('sources') or [source])[0]
+    source_path = (work / 'source' / descriptor['filename']).resolve()
+    if work not in source_path.parents or not source_path.is_file():
+        raise RuntimeError('the source file of phase A is missing')
+    if source_path.stat().st_size != descriptor['size'] or sha256_file(source_path) != descriptor['sha256']:
+        raise RuntimeError('the source file differs from the pinned descriptor')
+    structure = validate_gguf(source_path)
+    if structure.get('structure_valid') is not True:
+        raise RuntimeError('the source is not a valid GGUF')
+    for quant, receipt in receipts.items():
+        shards = (receipt.get('output') or {}).get('shards') or []
+        if len(shards) != 1:
+            raise RuntimeError(f'{quant}: phase A did not leave exactly one output file')
+        shard = shards[0]
+        path = (work / quant / shard['name']).resolve()
+        if work not in path.parents or not path.is_file():
+            raise RuntimeError(f'{quant}: the output file of phase A is missing')
+        if path.stat().st_size != shard['size'] or sha256_file(path) != shard['sha256']:
+            raise RuntimeError(f'{quant}: the output file differs from what phase A recorded')
+        check = validate_gguf(path, expected_architecture=structure['architecture'])
+        if check.get('structure_valid') is not True or check['tensor_count'] != structure['tensor_count'] or check['tensor_name_set_sha256'] != structure['tensor_name_set_sha256']:
+            raise RuntimeError(f'{quant}: the quantized file does not hold exactly the tensors of the source')
+        started = time.monotonic()
+        staging = stage(api, manifest['target_repo_id'], branch or f'hfqa-staging-{job_id}', [{'path': str(path), 'name': shard['name'], 'size': shard['size'], 'sha256': shard['sha256']}],
+                        private=bool(manifest.get('private')), message=f'HFQA validated {quant} (staging, not a release)')
+        receipt['staging'] = staging
+        receipt['state'] = 'RUNNER_VALIDATED_STAGED'
+        receipt.setdefault('timings_seconds', {})['upload'] = round(time.monotonic() - started, 1)
+        path.unlink(missing_ok=True)   # the Hub holds the verified copy; disk is the scarce resource
+        log(json.dumps({'event': 'quant_staged', 'quant': quant, 'bytes': shard['size']}), flush=True)
+    return receipts
+
+
 def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_dir: Path, work: Path, job_id: str, api=None, branch: str | None = None,
-                   env: dict | None = None, log=print, fetch=fetch_source, tools=None, measure=runner_quality.measure) -> dict:
-    """All requested quants in this job (cheap for models of this size). Returns {quant: receipt}; nothing is written to `main`."""
+                   env: dict | None = None, log=print, fetch=fetch_source, tools=None, measure=runner_quality.measure, defer_staging: bool = False) -> dict:
+    """All requested quants in this job (cheap for models of this size). Returns {quant: receipt}; nothing is written to `main`.
+
+    `defer_staging` is phase A of a fork build: the outputs stay on disk (so the source must be of the small kind) and nothing is staged; `stage_deferred` does that afterwards."""
     if source.get('sources') and len(source['sources']) != 1:
         raise ValueError('the importance-matrix path takes exactly one source file')
     descriptor = (source.get('sources') or [source])[0]
     if descriptor['size'] > MAX_SOURCE_BYTES:
         raise ValueError('the source is too large for the importance-matrix path')
+    if defer_staging and (api is not None or descriptor['size'] > SMALL_SOURCE_BYTES):
+        raise ValueError('the two-phase path keeps all outputs on disk: it takes a small source and holds no key')
     runtime_dir = Path(runtime_dir)
     tools = tools or {'imatrix': runtime_dir / 'llama-imatrix', 'quantize': runtime_dir / 'llama-quantize', 'cli': runtime_dir / 'llama-cli'}
     for name, tool in tools.items():
@@ -215,7 +259,7 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
         quality = {'skipped': 'not requested'}
     for quant, receipt in receipts.items():
         receipt['quality'] = ({'evidence': quality['evidence'], 'statistics': quality['per_quant'][quant]} if 'evidence' in quality else {'skipped': quality['skipped']})
-    if not manifest.get('keep_outputs'):
+    if not manifest.get('keep_outputs') and not defer_staging:
         for out in outputs.values():
-            out.unlink(missing_ok=True)  # disk is the scarce resource on a runner
+            out.unlink(missing_ok=True)  # disk is the scarce resource on a runner (phase B removes the deferred ones after staging)
     return receipts

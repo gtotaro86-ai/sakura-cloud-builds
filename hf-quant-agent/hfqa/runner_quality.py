@@ -104,7 +104,8 @@ def measure(source_path: Path, quants: dict[str, Path], tool: Path, work: Path, 
     except Unavailable as error:
         return {'skipped': str(error)}
     import os
-    env = os.environ.copy()
+    from hfqa import safe_env
+    env = safe_env.clean()
     env['LD_LIBRARY_PATH'] = str(Path(tool).parent) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
     chunks = chunks_for(source_bytes)
     base_log = work / 'quality-logs' / 'source.kld'

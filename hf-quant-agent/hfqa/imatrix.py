@@ -174,7 +174,8 @@ def prepare_imatrix(source: str | Path, output_dir: str | Path, binary: str | Pa
     command = [str(tool), "-m", str(src), "-f", str(dataset), "-o", str(partial),
                "--output-format", "dat", "--no-ppl", "-t", "1", "-tb", "1",
                "-c", "128", "-b", "128", "-ub", "128", "--chunks", "4", "-ngl", "0"]
-    env = os.environ.copy()
+    from hfqa import safe_env
+    env = safe_env.clean()
     env["LD_LIBRARY_PATH"] = str(tool.parent) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         completed = subprocess.run(command, check=False, stdin=subprocess.DEVNULL,

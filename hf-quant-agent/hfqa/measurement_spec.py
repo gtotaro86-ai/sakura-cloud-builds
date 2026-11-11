@@ -22,6 +22,7 @@ def file_descriptor(item):
 def validate_manifest(manifest):
     if not isinstance(manifest,dict):raise ValueError('measurement manifest must be an object')
     runtime=source_builds.validate(manifest.get('runtime'))
+    if runtime['repo']!=source_builds.REPO:raise ValueError('measurement runs only on ggml-org/llama.cpp, never on a fork')
     if manifest.get('runtime_revision')!=runtime['revision']:raise ValueError('measurement runtime revisions differ')
     file_descriptor(manifest.get('source'))
     candidates=manifest.get('candidates')

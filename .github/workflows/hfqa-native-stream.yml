@@ -392,7 +392,7 @@ jobs:
   build_llama:
     # llama.cpp from an exact master commit that Oracle chose (no official release knows the architecture yet). This job has no secret: the
     # build runs unreleased upstream CMake scripts. It uploads the binaries and a receipt with their SHA-256; the imatrix job re-hashes them.
-    if: github.event.repository.private == false && (inputs.mode == 'build' || inputs.mode == 'measure' || (inputs.mode == 'imatrix' && inputs.manifest_json != '' && fromJSON(inputs.manifest_json).runtime.kind == 'source'))
+    if: github.event.repository.private == false && (inputs.mode == 'build' || inputs.mode == 'measure' || (inputs.mode == 'imatrix' && inputs.manifest_json != '' && fromJSON(inputs.manifest_json).runtime.kind == 'source' && fromJSON(inputs.manifest_json).runtime.repo == 'ggml-org/llama.cpp'))
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -405,7 +405,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          repository: ggml-org/llama.cpp
+          repository: ${{ fromJSON(inputs.manifest_json).runtime.repo }}
           ref: ${{ fromJSON(inputs.manifest_json).runtime.revision }}
           path: llama
           persist-credentials: false
@@ -503,7 +503,6 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HFQA_MANIFEST_JSON: ${{ inputs.manifest_json }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -518,6 +517,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Prepare the pinned stock runtime (llama-imatrix, llama-quantize, llama-cli) and isolated dependencies
+        id: prep
         working-directory: hf-quant-agent
         run: |
           set -euo pipefail
@@ -530,6 +530,12 @@ jobs:
               raise SystemExit('imatrix mode needs an explicit manifest within the input budget')
           pathlib.Path(os.environ['RUNNER_TEMP'], 'hfqa-request.json').write_text(raw, encoding='utf-8')
           PY
+          if python3 -c "import json,sys; r=(json.load(open(sys.argv[1])).get('runtime') or {}); sys.exit(0 if (r.get('kind') == 'source' and r.get('repo') != 'ggml-org/llama.cpp') else 1)" "$RUNNER_TEMP/hfqa-request.json"; then
+            echo "fork=true" >> "$GITHUB_OUTPUT"
+            "$RUNNER_TEMP/hfqa-env/bin/pip" install modal==1.6.3
+          else
+            echo "fork=false" >> "$GITHUB_OUTPUT"
+          fi
           if python3 -c "import json,sys; sys.exit(0 if (json.load(open(sys.argv[1])).get('runtime') or {}).get('kind') == 'source' else 1)" "$RUNNER_TEMP/hfqa-request.json"; then
             echo "source build: the binaries come from the build job (downloaded in the next step)"
             echo "$RUNNER_TEMP/llama-build" > "$RUNNER_TEMP/hfqa-runtime-path"
@@ -545,6 +551,9 @@ jobs:
           name: hfqa-llama-build-${{ github.run_id }}
           path: ${{ runner.temp }}/llama-build
       - name: Importance matrix, quantize with it, verify, run a real inference, then stage on a branch (never main)
+        if: steps.prep.outputs.fork != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: hf-quant-agent
         run: |
           set -euo pipefail
@@ -557,6 +566,42 @@ jobs:
           "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_imatrix_worker.py \
             --manifest "$RUNNER_TEMP/hfqa-request.json" --runtime-dir "$runtime_dir" --work "$RUNNER_TEMP/hfqa-imatrix" \
             --job-id "${{ inputs.job_id }}" --branch "hfqa-staging-${{ inputs.job_id }}" --upload "${extra[@]}"
+      # A llama.cpp FORK is third-party code. Nothing of it runs on this runner: phase A (clone, build, quantize, test) runs in a Modal container that has no secret at all
+      # (scripts/modal_fork_phase.py); this step holds the Modal token and no Hugging Face key and only downloads files. Phase B below uses the key, with our own code only.
+      - name: Fork build, phase A - build, quantize and test on Modal (no key; nothing of the fork runs on this runner)
+        if: steps.prep.outputs.fork == 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          work="$RUNNER_TEMP/hfqa-fork-work"
+          echo "$work" > "$RUNNER_TEMP/hfqa-fork-work-path"
+          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_fork_on_modal.py \
+            --manifest "$RUNNER_TEMP/hfqa-request.json" --job-id "${{ inputs.job_id }}" --work "$work" --runtime-dir "$runtime_dir"
+      - name: Fork build - keep the tool logs
+        if: always() && steps.prep.outputs.fork == 'true'
+        run: |
+          set -uo pipefail
+          work=$(cat "$RUNNER_TEMP/hfqa-fork-work-path" 2>/dev/null || true)
+          mkdir -p "$RUNNER_TEMP/hfqa-imatrix/logs"
+          if [ -n "$work" ] && [ -d "$work" ]; then
+            for f in "$work"/*/logs/*.log; do [ -f "$f" ] && cp "$f" "$RUNNER_TEMP/hfqa-imatrix/logs/$(basename "$(dirname "$(dirname "$f")")")-$(basename "$f")" || true; done
+          fi
+      - name: Fork build, phase B - re-check the files and stage them (the key is used here, by our own code only)
+        if: steps.prep.outputs.fork == 'true' && success()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          work=$(cat "$RUNNER_TEMP/hfqa-fork-work-path")
+          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_imatrix_worker.py \
+            --manifest "$RUNNER_TEMP/hfqa-request.json" --runtime-dir "$runtime_dir" --build-receipt "$runtime_dir/build-receipt.json" --work "$work" --out "$RUNNER_TEMP/hfqa-imatrix" \
+            --job-id "${{ inputs.job_id }}" --branch "hfqa-staging-${{ inputs.job_id }}" --upload --phase stage
       - name: Retain the receipts and the tool logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

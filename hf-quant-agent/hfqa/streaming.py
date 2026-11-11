@@ -91,8 +91,13 @@ def model_hparams(metadata):
     prefix = arch + '.'
     embd = _uniform_int(metadata, prefix + 'embedding_length')
     head = _uniform_int(metadata, prefix + 'attention.head_count')
-    if not head or not embd or embd % head:
+    # embedding_length / head_count is only the DEFAULT head width. When the header states key_length and value_length (hybrid linear-attention models such as
+    # Qwen3.8: 5120 / 24 heads, head width 256) the division need not be exact: the pinned planner takes both widths as given and its type rules read only n_gqa,
+    # the expert count, the layer count and the tensor shapes (read in llama.cpp b11669 and b12064, src/llama-quant.cpp).
+    explicit_widths = prefix + 'attention.key_length' in metadata and prefix + 'attention.value_length' in metadata
+    if not head or not embd or (embd % head and not explicit_widths):
         raise ValueError('invalid native attention dimensions')
+    default_width = embd // head
     # Mixture-of-experts models without a dense feed-forward block (qwen35moe) carry only the expert widths; the width is a placeholder for the
     # planner, which NativeQuantizer.plan proves irrelevant for the real tensor catalogue before it is used.
     ffn_key = next((prefix + key for key in FFN_KEYS if prefix + key in metadata), prefix + 'feed_forward_length')
@@ -100,8 +105,8 @@ def model_hparams(metadata):
               _uniform_int(metadata, prefix + 'block_count'), head,
               _uniform_int(metadata, prefix + 'attention.head_count_kv', head),
               _uniform_int(metadata, prefix + 'expert_count', 0),
-              _uniform_int(metadata, prefix + 'attention.key_length', embd // head),
-              _uniform_int(metadata, prefix + 'attention.value_length', embd // head)]
+              _uniform_int(metadata, prefix + 'attention.key_length', default_width),
+              _uniform_int(metadata, prefix + 'attention.value_length', default_width)]
     if not params[1] or not params[2] or params[2] > 4096 or not params[4] or not params[6] or not params[7]:
         raise ValueError('invalid native model dimensions')
     return arch, params

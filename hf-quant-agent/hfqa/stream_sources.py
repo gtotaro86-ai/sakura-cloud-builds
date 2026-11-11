@@ -46,6 +46,9 @@ def select_stream_sources(analysis: dict, timeout: float = 30, *, component: str
         if not lowered.endswith('.gguf'):continue
         # Companion files are no model weights: the vision projector (mmproj) is far smaller than the model and would otherwise win "smallest complete set".
         if re.search(r'mmproj|(?:^|[-_./])imatrix',lowered):continue
+        # The same for speculative-decoding (MTP) modules and Engram table files: sidecars far smaller than the model. In unsloth/Qwen3.8-Flash-Next-GGUF a 5 GB
+        # MTP/...-shared-BF16.gguf won "smallest complete set" over the 354 GB BF16 set. Only a folder or a file NAME that starts with mtp/engram counts.
+        if re.search(r'(?:^|/)(?:mtp|engram)(?:[-_.]|/)',lowered):continue
         tagged=bool(re.search(PRECISION_TAG,lowered))
         split=re.search(r'-(\d{5})-of-(\d{5})(?=\.gguf$)',name,re.I)
         if not tagged and (component or split or re.search(OTHER_TAG,lowered)):continue

@@ -102,7 +102,8 @@ def quantize_file(
         report.update({"actual_used_method": method, "imatrix_sha256": matrix_sha256,
                        "imatrix": calibration, "quant": quant})
         return report
-    env = os.environ.copy()
+    from hfqa import safe_env
+    env = safe_env.clean()   # third-party binary: no secret in its environment
     lib_dir = str(binary.parent)
     env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     partial = dst.with_name(dst.name + ".partial.gguf")
@@ -180,7 +181,8 @@ def test_inference(
                "--single-turn", "--no-display-prompt"]
     if not repack:
         command.append("--no-repack")
-    env = os.environ.copy()
+    from hfqa import safe_env
+    env = safe_env.clean()
     env["LD_LIBRARY_PATH"] = str(binary.parent) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     # Files bound memory use even if a runtime emits excessive diagnostic output.
     stdout_path = logs / (model_path.stem + ".stdout.log")

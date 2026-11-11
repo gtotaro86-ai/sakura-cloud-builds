@@ -83,11 +83,9 @@ def find_native_gguf_repo(repo_id: str, timeout: float = 20, revision: str | Non
         return find_own_bf16_repo(repo_id, revision, timeout)
 
 
-# Only established quantizers are trusted to have converted the ORIGINAL weights unchanged. A repository of anyone else,
-# or one whose name signals changed weights, is never picked automatically: it could pass off a modified model as the original.
-TRUSTED_QUANTIZERS = frozenset(x.lower() for x in (
-    "bartowski", "unsloth", "lmstudio-community", "mradermacher", "QuantFactory", "ggml-org", "second-state", "TheBloke", "MaziyarPanahi"))
-MODIFIED_WEIGHTS_HINT = re.compile(r"abliterat|uncensor|heretic|merge|merged|finetune|fine-tune|lora|dpo|sft|rp[-_]|roleplay|distill", re.I)
+# Only established quantizers are trusted to have converted the ORIGINAL weights unchanged (hfqa/trusted_quantizers.py: built-in list plus the operator's file).
+# A repository of anyone else, or one whose name signals changed weights, is never picked automatically: it could pass off a modified model as the original.
+from hfqa.trusted_quantizers import MODIFIED_WEIGHTS_HINT, may_supply, name_filter_applies
 
 
 def find_third_party_gguf_repo(repo_id: str, timeout: float = 20, limit: int = 8) -> dict | None:
@@ -101,12 +99,13 @@ def find_third_party_gguf_repo(repo_id: str, timeout: float = 20, limit: int = 8
              + f"&sort=downloads&direction=-1&limit={limit}")
     ranks = {"bf16": 0, "f16": 1, "q8_0": 2}
     best = None
+    hinted = name_filter_applies(repo_id)  # a modified model's own GGUF may carry the same words in its name
     for position, item in enumerate(_json(query, timeout) or []):
         candidate = item.get("id") or item.get("modelId")
         if not candidate or candidate == repo_id:
             continue
         owner = candidate.split("/", 1)[0].lower()
-        if owner not in TRUSTED_QUANTIZERS or MODIFIED_WEIGHTS_HINT.search(candidate.split("/", 1)[-1]):
+        if not may_supply(owner, repo_id) or (hinted and MODIFIED_WEIGHTS_HINT.search(candidate.split("/", 1)[-1])):
             continue
         try:
             info = _json(f"https://huggingface.co/api/models/{urllib.parse.quote(candidate)}", timeout)
@@ -115,7 +114,7 @@ def find_third_party_gguf_repo(repo_id: str, timeout: float = 20, limit: int = 8
         except (InspectError, ValueError):
             continue
         card = info.get("cardData") or {}
-        if str(card.get("base_model_relation") or "quantized").lower() != "quantized" or MODIFIED_WEIGHTS_HINT.search(" ".join(info.get("tags") or [])):
+        if str(card.get("base_model_relation") or "quantized").lower() != "quantized" or (hinted and MODIFIED_WEIGHTS_HINT.search(" ".join(info.get("tags") or []))):
             continue
         licence = card.get("license") or _tag_license(info.get("tags") or [])
         rank = ranks.get(selected.get("source_precision"), 3)
@@ -144,7 +143,7 @@ def list_gguf_candidates(repo_id: str, timeout: float = 20, limit: int = 8) -> l
     for item in items:
         name = item.get("id") or item.get("modelId")
         if name and name != repo_id:
-            found.append({"repo_id": name, "downloads": item.get("downloads"), "trusted": name.split("/", 1)[0].lower() in TRUSTED_QUANTIZERS})
+            found.append({"repo_id": name, "downloads": item.get("downloads"), "trusted": may_supply(name.split("/", 1)[0], repo_id)})
     return found
 
 
@@ -247,8 +246,10 @@ def inspect_repo(source: str, timeout: float = 30) -> dict:
     card = _absolute_license_link(card, repo_id, revision)
     license_decision = classify_license(license_id, card)
     from hfqa.provenance import identify
+    from hfqa import draft_models
     return {
         "repo_id": repo_id,
+        "draft_model": draft_models.detect(tags=info.get("tags"), architectures=(config or {}).get("architectures"), gguf_architecture=gguf.get("architecture")),
         "model_provenance": identify(info,repo_id,revision),
         "requested_revision": requested_rev,
         "revision": revision,
