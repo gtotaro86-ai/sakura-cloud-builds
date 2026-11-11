@@ -120,7 +120,7 @@ def make_matrix(source: Path, tools: dict, work: Path, cpus: int, *, large: bool
     return {'path': matrix, 'evidence': evidence}
 
 
-def stage_deferred(manifest: dict, source: dict, receipts: dict, *, work: Path, api, branch: str, job_id: str, log=print, stage=stage_on_branch, runner_checks=None) -> dict:
+def stage_deferred(manifest: dict, source: dict, receipts: dict, *, work: Path, api, branch: str, job_id: str, log=print, stage=stage_on_branch, runner_checks=None) -> dict:  # `receipts` may be a subset (one quant at a time)
     """Phase B of a two-phase release (a llama.cpp fork built from source): holds the Hugging Face key and runs ONLY our own code.
 
     Phase A (run as another user, without the key) produced the files and the receipts. Nothing it computed is trusted except the files themselves: the source and every output are
@@ -163,14 +163,15 @@ def release_quants(manifest: dict, source: dict, quants: list[str], *, runtime_d
                    env: dict | None = None, log=print, fetch=fetch_source, tools=None, measure=runner_quality.measure, defer_staging: bool = False) -> dict:
     """All requested quants in this job (cheap for models of this size). Returns {quant: receipt}; nothing is written to `main`.
 
-    `defer_staging` is phase A of a fork build: the outputs stay on disk (so the source must be of the small kind) and nothing is staged; `stage_deferred` does that afterwards."""
+    `defer_staging` is phase A of a fork build: the outputs stay on disk (the machine of phase A holds source and all outputs; the runner receives one quant at a time) and nothing is staged;
+    `stage_deferred` does that afterwards."""
     if source.get('sources') and len(source['sources']) != 1:
         raise ValueError('the importance-matrix path takes exactly one source file')
     descriptor = (source.get('sources') or [source])[0]
     if descriptor['size'] > MAX_SOURCE_BYTES:
         raise ValueError('the source is too large for the importance-matrix path')
-    if defer_staging and (api is not None or descriptor['size'] > SMALL_SOURCE_BYTES):
-        raise ValueError('the two-phase path keeps all outputs on disk: it takes a small source and holds no key')
+    if defer_staging and api is not None:
+        raise ValueError('the two-phase path holds no key in phase A')
     runtime_dir = Path(runtime_dir)
     tools = tools or {'imatrix': runtime_dir / 'llama-imatrix', 'quantize': runtime_dir / 'llama-quantize', 'cli': runtime_dir / 'llama-cli'}
     for name, tool in tools.items():

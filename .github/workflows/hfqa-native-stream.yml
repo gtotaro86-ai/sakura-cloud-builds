@@ -567,7 +567,8 @@ jobs:
             --manifest "$RUNNER_TEMP/hfqa-request.json" --runtime-dir "$runtime_dir" --work "$RUNNER_TEMP/hfqa-imatrix" \
             --job-id "${{ inputs.job_id }}" --branch "hfqa-staging-${{ inputs.job_id }}" --upload "${extra[@]}"
       # A llama.cpp FORK is third-party code. Nothing of it runs on this runner: phase A (clone, build, quantize, test) runs in a Modal container that has no secret at all
-      # (scripts/modal_fork_phase.py); this step holds the Modal token and no Hugging Face key and only downloads files. Phase B below uses the key, with our own code only.
+      # (scripts/modal_fork_phase.py). The runner holds the Modal token and the Hugging Face key, but never in the same program: every command below gets only the secret it needs.
+      # Phase B takes one quant at a time (fetch, re-check, stage, delete), so the runner's disk holds the source and one quant, however many presets there are.
       - name: Fork build, phase A - build, quantize and test on Modal (no key; nothing of the fork runs on this runner)
         if: steps.prep.outputs.fork == 'true'
         env:
@@ -579,7 +580,7 @@ jobs:
           runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
           work="$RUNNER_TEMP/hfqa-fork-work"
           echo "$work" > "$RUNNER_TEMP/hfqa-fork-work-path"
-          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_fork_on_modal.py \
+          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_fork_on_modal.py run \
             --manifest "$RUNNER_TEMP/hfqa-request.json" --job-id "${{ inputs.job_id }}" --work "$work" --runtime-dir "$runtime_dir"
       - name: Fork build - keep the tool logs
         if: always() && steps.prep.outputs.fork == 'true'
@@ -590,18 +591,32 @@ jobs:
           if [ -n "$work" ] && [ -d "$work" ]; then
             for f in "$work"/*/logs/*.log; do [ -f "$f" ] && cp "$f" "$RUNNER_TEMP/hfqa-imatrix/logs/$(basename "$(dirname "$(dirname "$f")")")-$(basename "$f")" || true; done
           fi
-      - name: Fork build, phase B - re-check the files and stage them (the key is used here, by our own code only)
+      - name: Fork build, phase B - one quant at a time - fetch it from Modal, re-check it, stage it (the key is used by our own code only)
         if: steps.prep.outputs.fork == 'true' && success()
         env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: hf-quant-agent
         run: |
           set -euo pipefail
           runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
           work=$(cat "$RUNNER_TEMP/hfqa-fork-work-path")
-          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_imatrix_worker.py \
-            --manifest "$RUNNER_TEMP/hfqa-request.json" --runtime-dir "$runtime_dir" --build-receipt "$runtime_dir/build-receipt.json" --work "$work" --out "$RUNNER_TEMP/hfqa-imatrix" \
-            --job-id "${{ inputs.job_id }}" --branch "hfqa-staging-${{ inputs.job_id }}" --upload --phase stage
+          py="$RUNNER_TEMP/hfqa-env/bin/python"
+          for quant in $("$py" -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["quants"]))' "$RUNNER_TEMP/hfqa-request.json"); do
+            env -u HF_TOKEN "$py" scripts/run_fork_on_modal.py fetch --job-id "${{ inputs.job_id }}" --work "$work" --quant "$quant"
+            env -u MODAL_TOKEN_ID -u MODAL_TOKEN_SECRET "$py" scripts/run_imatrix_worker.py \
+              --manifest "$RUNNER_TEMP/hfqa-request.json" --runtime-dir "$runtime_dir" --build-receipt "$runtime_dir/build-receipt.json" --work "$work" --out "$RUNNER_TEMP/hfqa-imatrix" \
+              --job-id "${{ inputs.job_id }}" --branch "hfqa-staging-${{ inputs.job_id }}" --upload --phase stage --quant "$quant"
+          done
+      - name: Fork build - remove the hand-over folder on Modal
+        if: always() && steps.prep.outputs.fork == 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        working-directory: hf-quant-agent
+        run: |
+          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_fork_on_modal.py cleanup --job-id "${{ inputs.job_id }}" || true
       - name: Retain the receipts and the tool logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

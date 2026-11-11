@@ -19,6 +19,7 @@ from scripts import fork_phase
 APP_NAME = 'hfqa-fork-build'
 VOLUME_NAME = 'hfqa-fork-transfer'
 TIMEOUT_S = 5 * 3600
+DISK_MIB = 512 * 1024   # the smallest size Modal accepts (and its default): source (up to 45 GB) and every quant of the job side by side; Modal allows up to 3 TiB
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -26,11 +27,12 @@ image = (
     modal.Image.debian_slim(python_version='3.12')
     .apt_install('git', 'cmake', 'build-essential', 'ca-certificates')
     .pip_install('numpy==2.2.6', 'huggingface_hub==2.3.0', 'hf-xet==1.7.0')
-    .add_local_dir(str(Path(__file__).resolve().parents[1]), fork_phase.APP_DIR, ignore=['**/.git', '**/__pycache__'])
+    .add_local_dir(str(Path(__file__).resolve().parents[1] / 'hfqa'), fork_phase.APP_DIR + '/hfqa', ignore=['**/__pycache__'])   # only the code the container runs, not tests, docs or a .git folder
+    .add_local_dir(str(Path(__file__).resolve().parents[1] / 'scripts'), fork_phase.APP_DIR + '/scripts', ignore=['**/__pycache__'])
 )
 
 
-@app.function(image=image, volumes={fork_phase.MOUNT: volume}, timeout=TIMEOUT_S, cpu=16, memory=32768, restrict_modal_access=True, max_containers=2, retries=0,
+@app.function(image=image, volumes={fork_phase.MOUNT: volume}, timeout=TIMEOUT_S, cpu=16, memory=32768, restrict_modal_access=True, max_containers=2, retries=0, ephemeral_disk=DISK_MIB,
               include_source=True, _experimental_restrict_output=True)
 def phase_a(manifest_json: str, job_id: str, github_env_json: str = '{}') -> str:
     """Never raises and returns only 'done' or 'failed'; the outcome is in <volume>/<job id>/status.json."""

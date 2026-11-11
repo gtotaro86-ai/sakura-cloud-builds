@@ -103,12 +103,16 @@ def run(args) -> dict:
         recorded = json.loads(phase_file.read_text(encoding='utf-8'))
         if recorded.get('job_id') != args.job_id or not isinstance(recorded.get('receipts'), dict) or sorted(recorded['receipts']) != sorted(manifest['quants']):
             raise ValueError('the phase A file does not belong to this job and its quants')
+        wanted = getattr(args, 'quant', None)
+        if wanted is not None and wanted not in recorded['receipts']:
+            raise ValueError('that quant is not part of this job')
+        subset = {wanted: recorded['receipts'][wanted]} if wanted else recorded['receipts']   # one quant at a time keeps the runner's disk free for the next one
         api = stage_api(manifest, source)
         from hfqa import runner_imatrix
         descriptor = (source.get('sources') or [source])[0]
         if not (work / 'source' / descriptor['filename']).is_file():   # phase A ran elsewhere (Modal): the source is fetched again here, by our own code, and proven against the pinned hash
             runner_imatrix.fetch_source(descriptor, work / 'source')
-        receipts = runner_imatrix.stage_deferred(manifest, source, recorded['receipts'], work=work, api=api, branch=args.branch, job_id=args.job_id)
+        receipts = runner_imatrix.stage_deferred(manifest, source, subset, work=work, api=api, branch=args.branch, job_id=args.job_id)
         write_receipts(receipts, manifest, build, out)
         _copy_logs(work, out)
         return receipts
@@ -150,6 +154,7 @@ def main() -> None:
     parser.add_argument('--job-id', required=True)
     parser.add_argument('--branch')
     parser.add_argument('--upload', action='store_true')
+    parser.add_argument('--quant', default=None, help='with --phase stage: stage only this quant (the others are handled by further calls)')
     parser.add_argument('--phase', choices=('all', 'quantize', 'stage'), default='all', help='all: one process; quantize / stage: the two phases of a fork build (docs/FORK-BUILDS.md)')
     parser.add_argument('--out', type=Path, help='where receipts/ and logs/ go (default: --work)')
     args = parser.parse_args()
