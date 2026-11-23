@@ -101,9 +101,76 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
               handle.write('quants=' + json.dumps(quants) + '\n')
           PY
-  release:
+  probe:
+    # Load probe (hfqa/load_probe.py): before any hour-long step, the pinned build loads the header of the pinned source (the tensor data is a hole) once. A runtime that knows
+    # the architecture NAME but not this model's tensors (Kolibri 1.1 on the build that knew Kolibri 1) is found in seconds instead of in the final inference test.
+    # This job never fails because of the probe: the verdict is an output. Only `probe_gate` fails the run, and only on a loader error; every doubt lets the release go on.
     needs: plan
     if: github.event.repository.private == false && inputs.mode == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      verdict: ${{ steps.probe.outputs.verdict }}
+      reason: ${{ steps.probe.outputs.reason }}
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HFQA_MANIFEST_JSON: ${{ inputs.manifest_json }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Pinned native runtime and dependencies (no secrets)
+        id: prepare
+        continue-on-error: true
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/hfqa-env"
+          "$RUNNER_TEMP/hfqa-env/bin/pip" install numpy==2.2.6 huggingface_hub==2.3.0 hf-xet==1.7.0
+          python - <<'PY'
+          import os, pathlib
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'hfqa-request.json').write_text(os.environ['HFQA_MANIFEST_JSON'], encoding='utf-8')
+          PY
+          python scripts/fetch_stream_runtime.py --destination "$RUNNER_TEMP/hfqa-runtime" --manifest "$RUNNER_TEMP/hfqa-request.json" > "$RUNNER_TEMP/hfqa-runtime-path"
+      - name: Load probe (the pinned build must be able to load this model's structure)
+        id: probe
+        if: steps.prepare.outcome == 'success'
+        continue-on-error: true
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          runtime_dir=$(cat "$RUNNER_TEMP/hfqa-runtime-path")
+          export LD_LIBRARY_PATH="$runtime_dir"
+          "$RUNNER_TEMP/hfqa-env/bin/python" scripts/run_load_probe.py --manifest "$RUNNER_TEMP/hfqa-request.json" \
+            --llama-cli "$runtime_dir/llama-cli" --work "$RUNNER_TEMP/hfqa-probe"
+      - name: Retain the probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hfqa-load-probe-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/hfqa-probe/probe.json
+            ${{ runner.temp }}/hfqa-probe/logs/*.log
+          if-no-files-found: warn
+          retention-days: 14
+  probe_gate:
+    # Fails the run (and only then) when the probe proved that the pinned build cannot load the model. Oracle recognizes this job by its name and lets the job wait
+    # for a newer qualified build instead of failing (hfqa/stream_controller.py).
+    name: HFQA PROBE REJECTED ${{ needs.probe.outputs.reason }}
+    needs: probe
+    if: github.event.repository.private == false && inputs.mode == 'release' && needs.probe.outputs.verdict == 'rejected'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "The pinned llama.cpp build cannot load this model; no quantization was started."
+          exit 1
+  release:
+    needs: [plan, probe]
+    if: ${{ !cancelled() && github.event.repository.private == false && inputs.mode == 'release' && needs.plan.result == 'success' && needs.probe.outputs.verdict != 'rejected' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
