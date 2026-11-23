@@ -240,6 +240,9 @@ jobs:
     if: github.event.repository.private == false && inputs.mode == 'release_matrix'
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    outputs:
+      verdict: ${{ steps.probe.outputs.verdict }}
+      reason: ${{ steps.probe.outputs.reason }}
     env:
       OPENBLAS_NUM_THREADS: '1'
       HF_HUB_DISABLE_TELEMETRY: '1'
@@ -270,7 +273,7 @@ jobs:
           revision=$(python3 -c "import json,os; print(json.loads(os.environ['HFQA_MANIFEST_JSON'])['runtime_revision'])")
           test "$(git -C llama-source rev-parse HEAD)" = "$revision"
           cmake -S llama-source -B "$RUNNER_TEMP/llama-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_COMMIT="$revision"
-          cmake --build "$RUNNER_TEMP/llama-build" -j 2 --target llama-imatrix
+          cmake --build "$RUNNER_TEMP/llama-build" -j 2 --target llama-imatrix llama-completion
       - name: Dependencies and the manifest (no secrets)
         working-directory: hf-quant-agent
         run: |
@@ -284,7 +287,26 @@ jobs:
               raise SystemExit('release_matrix needs an explicit manifest within the input budget')
           pathlib.Path(os.environ['RUNNER_TEMP'], 'hfqa-request.json').write_text(raw, encoding='utf-8')
           PY
+      - name: Load probe (the build made from the pinned commit must be able to load this model's structure)
+        id: probe
+        continue-on-error: true
+        working-directory: hf-quant-agent
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/llama-build/bin"
+          "$RUNNER_TEMP/env/bin/python" scripts/run_load_probe.py --manifest "$RUNNER_TEMP/hfqa-request.json"             --llama-cli "$RUNNER_TEMP/llama-build/bin/llama-completion" --work "$RUNNER_TEMP/hfqa-probe"
+      - name: Retain the probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hfqa-load-probe-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/hfqa-probe/probe.json
+            ${{ runner.temp }}/hfqa-probe/logs/*.log
+          if-no-files-found: warn
+          retention-days: 14
       - name: Make the importance matrix from the pinned calibration files (no secrets)
+        if: steps.probe.outputs.verdict != 'rejected'
         working-directory: hf-quant-agent
         run: |
           set -euo pipefail
@@ -293,6 +315,7 @@ jobs:
             --imatrix-tool "$RUNNER_TEMP/llama-build/bin/llama-imatrix" --work "$RUNNER_TEMP/matrix"
           df -h / | cat
       - name: Hand matrix and evidence to the quant jobs
+        if: steps.probe.outputs.verdict != 'rejected'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: hfqa-matrix-${{ github.run_id }}
@@ -309,12 +332,23 @@ jobs:
           path: ${{ runner.temp }}/matrix/logs/*.log
           if-no-files-found: warn
           retention-days: 14
+  probe_gate_matrix:
+    # Same as probe_gate for the weighted release: the probe ran inside matrix_prepare (the matrix is the first hour-long step). Oracle recognizes the job by its name.
+    name: HFQA PROBE REJECTED ${{ needs.matrix_prepare.outputs.reason }}
+    needs: matrix_prepare
+    if: github.event.repository.private == false && inputs.mode == 'release_matrix' && needs.matrix_prepare.outputs.verdict == 'rejected'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "The build of the pinned commit cannot load this model; no importance matrix and no quantization were started."
+          exit 1
   release_matrix:
     # Weighted (imatrix) stream release: unchanged upstream commit built here, the matrix from matrix_prepare, shards streamed, tested and staged on a branch
     # (never main). The Hub token exists only in the last step; the worker checks the pinned runtime, tools and matrix evidence before it touches the token
     # (hfqa.stream_matrix_qualification), and Oracle compares the staged files' tensor types with the stock quantizer's plan (hfqa.quant_plan).
     needs: [plan, matrix_prepare]
-    if: github.event.repository.private == false && inputs.mode == 'release_matrix'
+    if: ${{ !cancelled() && github.event.repository.private == false && inputs.mode == 'release_matrix' && needs.plan.result == 'success' && needs.matrix_prepare.result == 'success' && needs.matrix_prepare.outputs.verdict != 'rejected' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:

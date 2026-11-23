@@ -74,6 +74,8 @@ def run_cli(launcher, first_file: Path, log_dir: Path, timeout: int = DEFAULT_TI
     # No weight repacking (it would copy the whole model into RAM), no warm-up, one token: the load is what is being probed.
     command = prefix + ['-m', str(first_file), '-p', 'hi', '-n', '1', '-c', '64', '--temp', '0', '-t', str(threads), '-ngl', '0',
                         '--single-turn', '--no-display-prompt', '--no-warmup', '--no-repack']
+    if 'completion' in Path(prefix[-1]).name:
+        command.append('-no-cnv')  # llama-completion aborts (SIGABRT) on a model with a custom chat template unless conversation mode is off (measured with Inkling 2 on b12623)
     env = safe_env.clean()
     env['LD_LIBRARY_PATH'] = str(binary.resolve().parent) + ':' + env.get('LD_LIBRARY_PATH', '')
     log_dir = Path(log_dir)
