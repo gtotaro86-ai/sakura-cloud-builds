@@ -14,6 +14,7 @@ that stays the job of the real inference test. The result is one of
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
@@ -67,6 +68,18 @@ def classify(returncode: int | None, output: str, timed_out: bool = False) -> di
     return {'verdict': 'inconclusive', 'reason': f'the probe run exited with code {returncode} without a loader error'}
 
 
+def _read_log_excerpt(path: Path, head: int = 32768, tail: int = 65536) -> str:
+    """Keep both the beginning and the tail of a log so long tensor listings never hide a trailing loader error."""
+    size = path.stat().st_size
+    if size <= head + tail:
+        return path.read_bytes().decode('utf-8', 'replace')
+    with path.open('rb') as handle:
+        start = handle.read(head)
+        handle.seek(-tail, 2)
+        end = handle.read(tail)
+    return start.decode('utf-8', 'replace') + '\n...\n' + end.decode('utf-8', 'replace')
+
+
 def run_cli(launcher, first_file: Path, log_dir: Path, timeout: int = DEFAULT_TIMEOUT, threads: int = 2) -> dict:
     """One bounded CPU load of the probe file. `launcher` is the llama-cli path (or a command list for tests)."""
     prefix = [str(part) for part in launcher] if isinstance(launcher, (list, tuple)) else [str(launcher)]
@@ -77,7 +90,9 @@ def run_cli(launcher, first_file: Path, log_dir: Path, timeout: int = DEFAULT_TI
     if 'completion' in Path(prefix[-1]).name:
         command.append('-no-cnv')  # llama-completion aborts (SIGABRT) on a model with a custom chat template unless conversation mode is off (measured with Inkling 2 on b12623)
     env = safe_env.clean()
-    env['LD_LIBRARY_PATH'] = str(binary.resolve().parent) + ':' + env.get('LD_LIBRARY_PATH', '')
+    lib_dir = str(binary.resolve().parent)
+    existing_ld = env.get('LD_LIBRARY_PATH', '')
+    env['LD_LIBRARY_PATH'] = f'{lib_dir}{os.pathsep}{existing_ld}' if existing_ld else lib_dir
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / 'load-probe.stdout.log', log_dir / 'load-probe.stderr.log'
@@ -94,7 +109,7 @@ def run_cli(launcher, first_file: Path, log_dir: Path, timeout: int = DEFAULT_TI
         err_path.write_text(f'{type(exc).__name__}: {exc}\n', encoding='utf-8')
         return {'verdict': 'inconclusive', 'reason': 'the probe binary could not be started', 'returncode': None, 'seconds': 0.0,
                 'stdout_log': str(out_path), 'stderr_log': str(err_path)}
-    text = err_path.read_bytes()[:65536].decode('utf-8', 'replace') + '\n' + out_path.read_bytes()[:16384].decode('utf-8', 'replace')
+    text = _read_log_excerpt(err_path, head=32768, tail=65536) + '\n' + _read_log_excerpt(out_path, head=8192, tail=8192)
     verdict = classify(code, text, timed_out)
     return {**verdict, 'returncode': code, 'seconds': round(time.monotonic() - started, 1), 'stdout_log': str(out_path), 'stderr_log': str(err_path)}
 
