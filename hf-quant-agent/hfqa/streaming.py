@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from hfqa.quants import FTYPE as QUANTS  # core presets plus the extra stock presets (see hfqa/quants.py)
 # GGML type -> (block elements, block bytes)
 LAYOUTS = {0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20),
-           6: (32, 22), 7: (32, 24), 8: (32, 34), 9: (32, 40),
+           6: (32, 22), 7: (32, 24), 8: (32, 34), 9: (32, 36),
            10: (256, 84), 11: (256, 110), 12: (256, 144),
            13: (256, 176), 14: (256, 210), 15: (256, 292), 30: (1, 2)}
 SOURCE_TYPES = {0, 1, 8, 30}

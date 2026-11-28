@@ -6,10 +6,12 @@ prefetch can overlap the beginning of the first tensor payload.
 from __future__ import annotations
 import re
 import struct
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from hfqa.gguf import GGUFError, TENSOR_LAYOUTS
+from hfqa.retries import TransientTransferError, classify
 
 MAX_RANGE_BYTES = 8 * 1024**2
 MAX_HEADER_BYTES = 64 * 1024**2
@@ -25,18 +27,21 @@ def descriptor_url(descriptor: dict) -> str:
 
 
 class RangeReader:
-    def __init__(self, descriptor: dict, opener=None):
+    def __init__(self, descriptor: dict, opener=None, *, max_retries: int = 3,
+                 retry_delays: tuple[float, ...] = (1.0, 4.0, 15.0), sleeper=None):
+        if type(max_retries) is not int or max_retries < 0:
+            raise ValueError('max_retries must be a non-negative integer')
         self.url=descriptor_url(descriptor)
         self.size=int(descriptor['size'])
         if isinstance(descriptor['size'],bool) or self.size<24: raise ValueError('invalid GGUF source size')
         self.opener=opener or urllib.request.urlopen
+        self.max_retries=max_retries
+        self.retry_delays=tuple(float(delay) for delay in retry_delays)
+        self.sleeper=sleeper or time.sleep
         self.bytes_read=0
         self.request_count=0
 
-    def read_range(self, offset: int, count: int) -> bytes:
-        if type(offset) is not int or type(count) is not int or offset<0 or count<0 or count>MAX_RANGE_BYTES or offset+count>self.size:
-            raise ValueError('range outside source or bounded read limit')
-        if count==0:return b''
+    def _attempt_read_range(self, offset: int, count: int) -> bytes:
         end=offset+count-1
         req=urllib.request.Request(self.url,headers={'Range':f'bytes={offset}-{end}', 'Accept-Encoding':'identity', 'User-Agent':'hf-quant-agent/0.2'})
         with self.opener(req,timeout=45) as response:
@@ -47,11 +52,31 @@ class RangeReader:
                 raise IOError('compressed range response rejected')
             blob=response.read(count+1)
         if len(blob)<count:
-            from hfqa.retries import TransientTransferError
             raise TransientTransferError('truncated range response')
         if len(blob)>count:raise IOError('oversized range response')
-        self.bytes_read+=len(blob);self.request_count+=1
         return blob
+
+    def read_range(self, offset: int, count: int) -> bytes:
+        if type(offset) is not int or type(count) is not int or offset<0 or count<0 or count>MAX_RANGE_BYTES or offset+count>self.size:
+            raise ValueError('range outside source or bounded read limit')
+        if count==0:return b''
+        for attempt in range(self.max_retries+1):
+            try:
+                blob=self._attempt_read_range(offset,count)
+            except Exception as error:
+                if hasattr(error,'close'):
+                    try:error.close()
+                    except Exception:pass
+                fault=classify(error) if attempt<self.max_retries else None
+                if fault is None:
+                    raise
+                fallback=self.retry_delays[min(attempt,len(self.retry_delays)-1)] if self.retry_delays else 0.0
+                delay=min(max(fallback,float(fault.get('retry_after_seconds') or 0.0)),60.0)
+                if delay>0:
+                    self.sleeper(delay)
+            else:
+                self.bytes_read+=len(blob);self.request_count+=1
+                return blob
 
     def iter_range(self, offset: int, count: int, chunk_size: int=MAX_RANGE_BYTES):
         if type(offset) is not int or type(count) is not int or offset<0 or count<0 or offset+count>self.size:raise ValueError('invalid source interval')

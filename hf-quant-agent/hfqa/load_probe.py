@@ -80,12 +80,13 @@ def _read_log_excerpt(path: Path, head: int = 32768, tail: int = 65536) -> str:
     return start.decode('utf-8', 'replace') + '\n...\n' + end.decode('utf-8', 'replace')
 
 
-def run_cli(launcher, first_file: Path, log_dir: Path, timeout: int = DEFAULT_TIMEOUT, threads: int = 2) -> dict:
+def run_cli(launcher, first_file: Path, log_dir: Path, timeout: int = DEFAULT_TIMEOUT, threads: int | None = None) -> dict:
     """One bounded CPU load of the probe file. `launcher` is the llama-cli path (or a command list for tests)."""
     prefix = [str(part) for part in launcher] if isinstance(launcher, (list, tuple)) else [str(launcher)]
     binary = Path(prefix[0])
+    effective_threads = threads if threads is not None else max(2, min(4, os.cpu_count() or 2))
     # No weight repacking (it would copy the whole model into RAM), no warm-up, one token: the load is what is being probed.
-    command = prefix + ['-m', str(first_file), '-p', 'hi', '-n', '1', '-c', '64', '--temp', '0', '-t', str(threads), '-ngl', '0',
+    command = prefix + ['-m', str(first_file), '-p', 'hi', '-n', '1', '-c', '64', '--temp', '0', '-t', str(effective_threads), '-ngl', '0',
                         '--single-turn', '--no-display-prompt', '--no-warmup', '--no-repack']
     if 'completion' in Path(prefix[-1]).name:
         command.append('-no-cnv')  # llama-completion aborts (SIGABRT) on a model with a custom chat template unless conversation mode is off (measured with Inkling 2 on b12623)
